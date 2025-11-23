@@ -11,7 +11,6 @@
 //! since we wouldn't have the filter for all blocks yet.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![allow(clippy::manual_is_multiple_of)]
 
 use core::fmt::Debug;
 use std::fmt::Display;

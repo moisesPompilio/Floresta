@@ -1525,7 +1525,7 @@ mod test {
     use crate::pruned_utreexo::utxo_data::UtxoData;
     use crate::AssumeValidArg;
     use crate::BlockchainError;
-    #[cfg(feature = "flat-chainstore")]
+    #[cfg(all(feature = "flat-chainstore", not(feature = "kv-chainstore")))]
     use crate::FlatChainStore;
     #[cfg(feature = "kv-chainstore")]
     use crate::KvChainStore;
@@ -1540,7 +1540,7 @@ mod test {
         ChainState::new(chainstore, network, assume_valid_arg)
     }
 
-    #[cfg(feature = "flat-chainstore")]
+    #[cfg(all(feature = "flat-chainstore", not(feature = "kv-chainstore")))]
     fn setup_test_chain(
         network: Network,
         assume_valid_arg: AssumeValidArg,

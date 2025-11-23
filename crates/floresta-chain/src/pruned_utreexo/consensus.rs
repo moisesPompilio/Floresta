@@ -730,7 +730,8 @@ mod tests {
         // Check that the error is exactly what we expect.
         match err {
             BlockchainError::TransactionError(inner) => {
-                assert_eq!(inner, tx_err!(|| spending_tx.compute_txid(), ScriptError));
+                let txid = || spending_tx.compute_txid();
+                assert_eq!(inner, tx_err!(txid, ScriptError));
             }
             e => panic!("Expected a TransactionError, but got: {e:?}"),
         }

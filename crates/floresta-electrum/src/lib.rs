@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![allow(clippy::manual_is_multiple_of)]
 
 use serde::Deserialize;
 use serde::Serialize;

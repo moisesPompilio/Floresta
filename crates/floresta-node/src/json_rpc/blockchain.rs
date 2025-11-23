@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use bitcoin::block::Header;
 use bitcoin::consensus::encode::serialize_hex;
 use bitcoin::consensus::Encodable;
@@ -396,7 +398,13 @@ impl<Blockchain: RpcChain> RpcImpl<Blockchain> {
         let mut i = 0usize;
 
         // little reused helper to hex string
-        let to_hex_string = |r: &[u8]| r.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let to_hex_string = |r: &[u8]| {
+            let mut s = String::with_capacity(r.len() * 2);
+            for b in r {
+                write!(&mut s, "{:02x}", b).unwrap();
+            }
+            s
+        };
 
         while i < bytes.len() {
             let byte = bytes[i];

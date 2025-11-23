@@ -1,5 +1,4 @@
 #![cfg(all(feature = "bitcoinconsensus", feature = "test-utils"))]
-#![allow(clippy::manual_is_multiple_of)]
 
 use std::collections::HashSet;
 

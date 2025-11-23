@@ -216,7 +216,7 @@ pub fn init_logging(
         fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&file_path)?;
+            .open(file_path)?;
     }
 
     // Timer for log events.
