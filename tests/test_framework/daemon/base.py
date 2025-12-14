@@ -8,7 +8,7 @@ regtest mode.
 
 import os
 from datetime import datetime, timezone
-from subprocess import Popen
+from subprocess import Popen, PIPE
 from typing import List
 
 
@@ -183,6 +183,9 @@ class BaseDaemon(metaclass=BaseDaemonMetaClass):
         append it with add_daemon_settings. Not all possible arguments
         are valid for tests
         """
+        if self.is_running:
+            raise RuntimeError(f"Daemon '{self.name}' is already running")
+
         daemon = os.path.normpath(os.path.join(self.target, self.name))
         if not os.path.exists(daemon):
             raise ValueError(f"Daemon path {daemon} does not exist")
@@ -224,8 +227,18 @@ class BaseDaemon(metaclass=BaseDaemonMetaClass):
             cmd.extend(self._settings)
 
         # pylint: disable=consider-using-with
-        self.process = Popen(cmd, text=True)
-        self.log(f"Starting node '{self.name}': {' '.join(cmd)}")
+        self.process = Popen(cmd, text=True, stderr=PIPE)
+
+        # Wait a little to see if the process is running
+        time.sleep(1)
+        if not self.is_running:
+            self.process.terminate()
+            stderr = self.process.stderr.read()
+
+            self.log(f"Failed to start daemon '{self.name}'. Command: {' '.join(cmd)} ")
+            raise RuntimeError(f"Failed to start daemon '{self.name}'. {stderr}")
+
+        self.log(f"Starting daemon '{self.name}': {' '.join(cmd)}")
 
     def add_daemon_settings(self, settings: List[str]):
         """
