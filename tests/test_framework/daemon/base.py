@@ -37,6 +37,7 @@ class BaseDaemon(ABC):
         rpc_config: ConfigRPC,
         extra_args: List[str],
         electrum_config: ConfigElectrum,
+        network: str | None = None
     ):
         self._process: Popen | None = None
         self._name: str = name
@@ -49,6 +50,8 @@ class BaseDaemon(ABC):
             raise ValueError(f"Target path {target} does not exist")
         self._target: str = target
         self._p2p_config: ConfigP2P = p2p_config
+        # Only used for floresta
+        self._network: str | None = network
 
     # pylint: disable=R0801
     def log(self, message: str):
@@ -131,6 +134,10 @@ class BaseDaemon(ABC):
     def set_p2p_config(self, value: ConfigP2P):
         """Setter for `p2p_config` property"""
         self._p2p_config = value
+
+    def set_network(self, value: str ):
+        """Setter for `network` property"""
+        self._network = value
 
     def settings(self) -> List[str]:
         """Getter for `settings` property"""

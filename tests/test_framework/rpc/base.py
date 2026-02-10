@@ -325,3 +325,9 @@ class BaseRPC(ABC):
                 "disconnectnode", params=[node_address, node_id]
             )
         return self.perform_request("disconnectnode", params=[node_address])
+
+    def get_transaction(self, txid: str, verbosity: bool = True) -> dict:
+        """
+        Get a transaction by its ID
+        """
+        return self.perform_request("gettransaction", params=[txid, verbosity])

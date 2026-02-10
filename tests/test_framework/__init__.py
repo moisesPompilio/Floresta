@@ -301,8 +301,19 @@ class FlorestaTestFramework(metaclass=FlorestaTestMetaClass):
             variant=variant, extra_args=extra_args, tls=False
         )
 
+    def add_florestad_extra_args_and_network(self, network: str, extra_args: List[str]) -> Node:
+        """
+        Add a node with the specified variant and custom extra arguments.
+
+        This function uses default configurations for RPC, P2P, and Electrum,
+        and applies the provided extra arguments to the node.
+        """
+        return self._add_node_default_config(
+            variant=NodeType.FLORESTAD, extra_args=extra_args, network=network, tls=False
+        )
+
     def _add_node_default_config(
-        self, variant: NodeType, extra_args: List[str], tls: bool
+        self, variant: NodeType, extra_args: List[str], tls: bool, network: str | None = None
     ) -> Node:
 
         tempdir = str(Utility.get_integration_test_dir())
@@ -315,6 +326,7 @@ class FlorestaTestFramework(metaclass=FlorestaTestMetaClass):
             data_dir=data_dir,
             targetdir=targetdir,
             tls=tls,
+            network=network,
         )
 
         self._nodes.append(node)

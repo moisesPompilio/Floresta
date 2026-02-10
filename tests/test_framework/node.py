@@ -115,6 +115,7 @@ class Node:
         data_dir: str,
         targetdir: str,
         tls: bool,
+        network: str | None = None
     ) -> "Node":
         """
         Create a node with default arguments. this argument
@@ -138,6 +139,7 @@ class Node:
         )
 
         node.static_values = False
+        node.daemon.set_network(network)
 
         return node
 

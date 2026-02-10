@@ -1,0 +1,70 @@
+name: Security Tests
+
+on:
+  push:
+  schedule:
+    - cron: '0 0 * * *'  # daily at 00:00 UTC
+  workflow_dispatch: {}  # optional: allows manual workflow dispatch for testing
+
+jobs:
+  functional:
+    name: Security - ${{ matrix.feature }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: security-tests-${{ matrix.feature }}
+      cancel-in-progress: true
+    strategy:
+      matrix:
+        feature: ['bitcoin-master', 'security-ibd']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Prepare environment
+        run: uv sync --all-extras --dev
+
+      - name: Install Boost
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-all-dev
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Prepare functional tests (bitcoin master)
+        if: matrix.feature == 'bitcoin-master'
+        run: |
+          BITCOIN_REVISION=master tests/prepare.sh --release
+
+      - name: Prepare functional tests (security IBD)
+        if: matrix.feature == 'security-ibd'
+        run: tests/prepare.sh
+
+      - name: Run functional tests (bitcoin master)
+        if: matrix.feature == 'bitcoin-master'
+        run: tests/run.sh
+
+      - name: Run functional tests (security IBD)
+        if: matrix.feature == 'security-ibd'
+        run: tests/run.sh --security
+
+      - name: Log tests on failure
+        if: failure()
+        run: |
+          logs=()
+          while IFS= read -r line; do
+            logs+=("$line")
+          done < <(find /tmp/floresta-func-tests* -type f -path "*/logs/*.log" 2>/dev/null || true)
+
+          for logfile in "${logs[@]}"; do
+            echo "::group::$logfile"
+            cat "$logfile" || echo "Failed to read $logfile"
+            echo "::endgroup::"
+          done

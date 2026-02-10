@@ -158,6 +158,28 @@ def setup_test_suite(args: argparse.Namespace, test_dir: str) -> Queue:
 
     return task_queue
 
+def setup_test_suite_security(args: argparse.Namespace, test_dir: str) -> Queue:
+    """Return a Queue with all tests from tests/security (only when --security is set)."""
+    if args.test_suite:
+        raise argparse.ArgumentError(None, "Cannot combine --security with --test-suite")
+
+    task_queue = Queue()
+    full_path = os.path.join(test_dir, "security")
+    if not os.path.exists(full_path):
+        raise argparse.ArgumentError(None, f"Security test suite '{full_path}' does not exist")
+
+    for file in sorted(os.listdir(full_path)):
+        if file.endswith(".py"):
+            base = file[:-3]
+            if args.test_name and not any(
+                base.replace("-", "_").startswith(n.replace("-", "_"))
+                for n in args.test_name
+            ):
+                continue
+            task_queue.put((full_path, base))
+
+    return task_queue
+
 
 def run_test_workers(task_queue: Queue, args: argparse.Namespace) -> list:
     """Run the tests in parallel"""
@@ -283,6 +305,14 @@ def main():
         help="Number of threads to run tests in parallel (default: 4).",
     )
 
+    parser.add_argument(
+        "-S",
+        "--security",
+        action="store_true",
+        default=False,
+        help="Run only the isolated security tests (tests/security). When set, only security tests are executed.",
+    )
+
     # See these links for more information:
     # https://docs.python.org/3/library/io.html#io.DEFAULT_BUFFER_SIZE
     # https://stackoverflow.com/questions/29712445/what-is-the-use-of-buffering-in-pythons-built-in-open-function
@@ -300,11 +330,16 @@ def main():
 
     test_dir = os.path.abspath(os.path.dirname(__file__))
 
-    if args.list_suites:
-        list_test_suites(test_dir)
-        return
 
-    task_queue = setup_test_suite(args, test_dir)
+    if args.security:
+        task_queue = setup_test_suite_security(args, test_dir)
+    else:
+        if args.list_suites:
+            list_test_suites(test_dir)
+            return
+
+        task_queue = setup_test_suite(args, test_dir)
+
     results = run_test_workers(task_queue, args)
 
     passed = [(name, log, start, end) for (name, ok, log, start, end) in results if ok]
