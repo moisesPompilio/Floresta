@@ -252,6 +252,9 @@ build_utreexod() {
 
     cd "$DISPOSABLE_DIR/utreexod"
 
+    echo "Checking out utreexod at commit 6a6d794"
+    git checkout 6a6d79448eb8355553dad169bb2d1a7176abb697 || exit 1
+
     echo "Building utreexod..."
     go build -o "$BINARIES_DIR/." . || exit 1
     echo "Utreexod built successfully."
