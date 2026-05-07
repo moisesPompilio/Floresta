@@ -172,6 +172,7 @@ pub trait NetworkRpc {
     fn ping(&self) -> Result<(), Self::Error>;
 }
 
+#[floresta_proc_macro::maybe_async]
 pub trait RawTransactionRpc {
     type Error: Display + Debug;
 
