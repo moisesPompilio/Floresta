@@ -125,6 +125,7 @@ pub trait WalletRpc {
     ) -> Result<bool, Self::Error>;
 }
 
+#[floresta_proc_macro::maybe_async]
 pub trait NetworkRpc {
     type Error: Display + Debug;
 
