@@ -1081,6 +1081,7 @@ dependencies = [
  "floresta-chain",
  "floresta-common 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "floresta-compact-filters",
+ "floresta-domain",
  "floresta-mempool",
  "floresta-watch-only",
  "floresta-wire",
