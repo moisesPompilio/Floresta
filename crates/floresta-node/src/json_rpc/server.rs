@@ -668,23 +668,45 @@ impl<Blockchain: RpcChain> RpcImpl<Blockchain> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn create(
+    pub fn create(
         chain: Blockchain,
         wallet: Arc<AddressCache<KvDatabase>>,
         node: NodeHandle,
         kill_signal: Arc<RwLock<bool>>,
         network: Network,
         block_filter_storage: Option<Arc<NetworkFilters<FlatFiltersStore>>>,
-        address: Option<SocketAddr>,
         log_path: impl AsRef<Path>,
         user_agent: String,
         proxy: Option<SocketAddr>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            chain,
+            wallet,
+            node,
+            kill_signal,
+            network,
+            block_filter_storage,
+            inflight: Arc::new(RwLock::new(HashMap::new())),
+            log_path: log_path.as_ref().into(),
+            start_time: Instant::now(),
+            user_agent,
+            proxy,
+        })
+    }
+}
+
+pub struct RpcServer;
+
+impl RpcServer {
+    pub async fn spawn<Blockchain: RpcChain + 'static>(
+        rpc_impl: Arc<RpcImpl<Blockchain>>,
+        address: Option<String>,
     ) {
-        let address = address.unwrap_or_else(|| {
-            format!("127.0.0.1:{}", Self::get_port(&network))
-                .parse()
-                .expect("hardcoded address is valid")
-        });
+        let address = address.unwrap_or(format!(
+            "127.0.0.1:{}",
+            RpcImpl::<Blockchain>::get_port(&rpc_impl.network)
+        ));
+        let address: SocketAddr = address.parse().expect("hardcoded address is valid");
 
         let listener = match tokio::net::TcpListener::bind(address).await {
             Ok(listener) => {
@@ -709,19 +731,7 @@ impl<Blockchain: RpcChain> RpcImpl<Blockchain> {
                     .allow_private_network(true)
                     .allow_methods([Method::POST, Method::HEAD]),
             )
-            .with_state(Arc::new(Self {
-                chain,
-                wallet,
-                node,
-                kill_signal,
-                network,
-                block_filter_storage,
-                inflight: Arc::new(RwLock::new(HashMap::new())),
-                log_path: log_path.as_ref().into(),
-                start_time: Instant::now(),
-                user_agent,
-                proxy,
-            }));
+            .with_state(rpc_impl);
 
         axum::serve(listener, router)
             .await

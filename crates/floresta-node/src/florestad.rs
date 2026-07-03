@@ -457,25 +457,29 @@ impl Florestad {
         info!("Starting server");
         let wallet = Arc::new(wallet);
 
+        let rpc_impl = json_rpc::server::RpcImpl::create(
+            blockchain_state.clone(),
+            wallet.clone(),
+            chain_provider.get_handle(),
+            self.stop_signal.clone(),
+            self.config.network,
+            cfilters.clone(),
+            datadir.join("debug.log"),
+            self.config.user_agent.clone(),
+            proxy,
+        );
+
         // JSON-RPC
         #[cfg(feature = "json-rpc")]
         {
-            let server = tokio::spawn(json_rpc::server::RpcImpl::create(
-                blockchain_state.clone(),
-                wallet.clone(),
-                chain_provider.get_handle(),
-                self.stop_signal.clone(),
-                self.config.network,
-                cfilters.clone(),
-                self.config
-                    .json_rpc_address
-                    .as_ref()
-                    .map(|x| Self::resolve_hostname(x, 8332))
-                    .transpose()?,
-                datadir.join("debug.log"),
-                self.config.user_agent.clone(),
-                proxy,
-            ));
+            let address = self.config.json_rpc_address.clone();
+            let server = tokio::spawn({
+                let rpc = rpc_impl.clone();
+                async move {
+                    use crate::json_rpc::server::RpcServer;
+                    RpcServer::spawn(rpc, address).await
+                }
+            });
 
             if self.json_rpc.set(server).is_err() {
                 core::panic!("We should be the first one setting this");
