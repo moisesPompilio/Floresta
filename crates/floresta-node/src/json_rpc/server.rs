@@ -25,17 +25,16 @@ use bitcoin::TxOut;
 use bitcoin::Txid;
 use bitcoin::consensus::deserialize;
 use bitcoin::consensus::encode::serialize_hex;
-use bitcoin::ecdsa::Signature as EcdsaSignature;
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::hex;
 use bitcoin::hex::DisplayHex;
-use bitcoin::taproot::Signature as TaprootSignature;
 use corepc_types::ScriptPubKey;
 use corepc_types::ScriptSig;
 use corepc_types::v30::GetRawTransactionVerbose;
 use corepc_types::v31::RawTransactionInput;
 use corepc_types::v31::RawTransactionOutput;
 use floresta_chain::ThreadSafeChain;
+use floresta_chain::extensions::ScriptBufExt;
 use floresta_compact_filters::flat_filters_store::FlatFiltersStore;
 use floresta_compact_filters::network_filters::NetworkFilters;
 use floresta_watch_only::AddressCache;
@@ -558,7 +557,7 @@ impl<Blockchain: RpcChain> RpcImpl<Blockchain> {
         let txid = Some(input.previous_output.txid.to_string());
         let vout = Some(input.previous_output.vout);
         let script_sig = ScriptSig {
-            asm: to_core_asm_string(&input.script_sig, true),
+            asm: input.script_sig.to_core_asm_string(true),
             hex: input.script_sig.to_hex_string(),
         };
 
@@ -578,7 +577,7 @@ impl<Blockchain: RpcChain> RpcImpl<Blockchain> {
             value: value.to_btc(),
             index,
             script_pubkey: ScriptPubKey {
-                asm: to_core_asm_string(&output.script_pubkey, false),
+                asm: output.script_pubkey.to_core_asm_string(false),
                 hex: output.script_pubkey.to_hex_string(),
                 // `Address::from_script` can fail for nonstandard scripts. Bitcoin Core
                 // omits the `address` field entirely when `ExtractDestination` fails:
@@ -727,168 +726,5 @@ impl<Blockchain: RpcChain> RpcImpl<Blockchain> {
         axum::serve(listener, router)
             .await
             .expect("failed to start rpc server");
-    }
-}
-
-/// Converts a script to ASM (assembly) format, displaying the script's operations
-/// in a format similar to Bitcoin Core.
-///
-/// This function performs the following transformations:
-/// 1. Removes OP_PUSHBYTES and OP_PUSHDATA opcodes (these are unnecessary in ASM output)
-/// 2. Converts leading OP_0 to "0" and OP_PUSHNUM_1 to "1" (these represent witness versions)
-/// 3. If `attempt_sighash_decode` is true, attempts to decode hexadecimal data as signatures
-///    and appends their sighash type (useful for analyzing scripts in scriptSig)
-///
-/// # Arguments
-/// * `script` - The script buffer to convert
-/// * `attempt_sighash_decode` - If true, tries to parse data elements as signatures and format them
-pub(super) fn to_core_asm_string(script: &ScriptBuf, attempt_sighash_decode: bool) -> String {
-    let mut script_asm = script.to_asm_string();
-    if !script_asm.contains(' ') {
-        return script_asm;
-    }
-
-    // Remove OP_PUSHBYTES_X opcodes (these are only metadata for script serialization)
-    for i in 0..=75 {
-        script_asm = script_asm.replace(&format!("OP_PUSHBYTES_{} ", i), "");
-    }
-
-    // Remove OP_PUSHDATA1/2/4 opcodes (these are only metadata for script serialization)
-    for i in 1..=4 {
-        script_asm = script_asm.replace(&format!("OP_PUSHDATA{} ", i), "");
-    }
-
-    let mut array_script_asm: Vec<String> = script_asm.split(' ').map(String::from).collect();
-
-    // Convert leading OP_0 to "0" - represents witness version 0
-    if array_script_asm[0] == "OP_0" {
-        array_script_asm[0] = "0".to_string();
-    }
-
-    // Convert leading OP_PUSHNUM_1 to "1" - represents witness version 1 (Taproot)
-    if array_script_asm[0] == "OP_PUSHNUM_1" {
-        array_script_asm[0] = "1".to_string();
-    }
-
-    // If enabled, attempt to decode data elements as signatures and format them
-    // This is particularly useful for scriptSig analysis, where signatures are wrapped with their sighash type
-    if attempt_sighash_decode {
-        for word in array_script_asm.iter_mut() {
-            // Skip OP codes and small words that are unlikely to be signatures
-            if word.contains("OP") || word.len() <= 8 {
-                continue;
-            }
-
-            if let Some(decoded) =
-                try_parse_and_format_signature(&Vec::from_hex(word).unwrap_or_default())
-            {
-                *word = decoded;
-            }
-        }
-    }
-
-    array_script_asm.join(" ")
-}
-
-/// Attempts to decode a byte slice as a valid signature (ECDSA or Taproot).
-/// If the bytes represent a valid signature, returns the signature with the sighash type appended.
-fn try_parse_and_format_signature(signature_bytes: &[u8]) -> Option<String> {
-    macro_rules! try_decode_signature {
-        ($sig_type:ty) => {
-            if let Ok(signature) = <$sig_type>::from_slice(signature_bytes) {
-                // Extract the sighash type and remove the "SIGHASH_" prefix
-                // The rust-bitcoin library prefixes "SIGHASH_" to the type name, but Bitcoin Core
-                // does not include this prefix in the output
-                let label = signature.sighash_type.to_string().replace("SIGHASH_", "");
-                return Some(format!("{}[{}]", signature.signature, label));
-            }
-        };
-    }
-
-    // Attempt to parse as ECDSA signature
-    try_decode_signature!(EcdsaSignature);
-
-    // Attempt to parse as Taproot signature
-    try_decode_signature!(TaprootSignature);
-
-    // If the bytes don't match any known signature format, return None
-    None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_converter_script_into_asm_not_attempt_sighash_decode() {
-        let test_cases = [
-            // P2WPKH
-            (
-                "0014aabc2cd363103811113b040c541afe3759489c96",
-                "0 aabc2cd363103811113b040c541afe3759489c96",
-            ),
-            // BECH32
-            (
-                "0014251619c32f6500664e71a6d0393ec4b5f6da549c",
-                "0 251619c32f6500664e71a6d0393ec4b5f6da549c",
-            ),
-            (
-                "0014aa138477d24cb7b7a84160ef55af14b7bfb98143",
-                "0 aa138477d24cb7b7a84160ef55af14b7bfb98143",
-            ),
-            // P2PKH
-            (
-                "76a914e7d68c17e6275b2e5c1da053ef648c676c38962488ac",
-                "OP_DUP OP_HASH160 e7d68c17e6275b2e5c1da053ef648c676c389624 OP_EQUALVERIFY OP_CHECKSIG",
-            ),
-            (
-                "76a9144eb2df72d9befff81b6dd985044d2d1b3ed4de4188ac",
-                "OP_DUP OP_HASH160 4eb2df72d9befff81b6dd985044d2d1b3ed4de41 OP_EQUALVERIFY OP_CHECKSIG",
-            ),
-            // P2SH
-            (
-                "a914fae946075d1f629d35ed4067eca928c1632f4fef87",
-                "OP_HASH160 fae946075d1f629d35ed4067eca928c1632f4fef OP_EQUAL",
-            ),
-            // P2TR (Taproot)
-            (
-                "51209ec7be23a1ec17cd9c4b621d899eec02bacde1d754ab080f9e1ac8445820014e",
-                "1 9ec7be23a1ec17cd9c4b621d899eec02bacde1d754ab080f9e1ac8445820014e",
-            ),
-        ];
-
-        for (script_hex, expected_asm) in test_cases.iter() {
-            let script = ScriptBuf::from_hex(script_hex).unwrap();
-            let asm = to_core_asm_string(&script, false);
-
-            assert_eq!(asm, *expected_asm);
-        }
-    }
-
-    #[test]
-    fn test_converter_script_into_asm_attempt_sighash_decode() {
-        let test_cases = [
-            // scriptSig with ECDSA signature and pubkey
-            (
-                "47304402205a9b7c4432f9d895cbf4ac78519ae4e9776d47776078521b93e06beda560dd9a02202b1afbda3c917c2698b38f78203e03d2743069939e3ce2b6a3a153e148502f19012103fde976887234670c672e33a4707356997df737f3e7ac6de809164b5a606b8bad",
-                "304402205a9b7c4432f9d895cbf4ac78519ae4e9776d47776078521b93e06beda560dd9a02202b1afbda3c917c2698b38f78203e03d2743069939e3ce2b6a3a153e148502f19[ALL] 03fde976887234670c672e33a4707356997df737f3e7ac6de809164b5a606b8bad",
-            ),
-            (
-                "47304402204ab6753b249205b01d938826189cefaa4176e32ca5aa64fc6fd51891fb78fed2022065b7ba08d8739884ba232f5f7bf6efbb36b2cf98917630c64343cad2fe9db3a2012102ecf8dfb67cae8fe66d700cb13c458e5cc59be2a1c5f3ca3c5a54745259cbe45c",
-                "304402204ab6753b249205b01d938826189cefaa4176e32ca5aa64fc6fd51891fb78fed2022065b7ba08d8739884ba232f5f7bf6efbb36b2cf98917630c64343cad2fe9db3a2[ALL] 02ecf8dfb67cae8fe66d700cb13c458e5cc59be2a1c5f3ca3c5a54745259cbe45c",
-            ),
-            // P2WPKH
-            (
-                "160014bb180b7bf33f066f7b557c09a0bd3b6accc84fcf",
-                "0014bb180b7bf33f066f7b557c09a0bd3b6accc84fcf",
-            ),
-        ];
-
-        for (script_hex, expected_asm) in test_cases.iter() {
-            let script = ScriptBuf::from_hex(script_hex).unwrap();
-            let asm = to_core_asm_string(&script, true);
-
-            assert_eq!(asm, *expected_asm);
-        }
     }
 }

@@ -27,6 +27,7 @@ use corepc_types::v30::GetBlockchainInfo;
 use corepc_types::v30::GetDeploymentInfo;
 use floresta_chain::buried_deployments_for;
 use floresta_chain::extensions::HeaderExt;
+use floresta_chain::extensions::ScriptBufExt;
 use floresta_chain::extensions::WorkExt;
 use floresta_wire::node_interface::ChainMethods;
 use miniscript::descriptor::checksum;
@@ -42,7 +43,6 @@ use super::server::RpcImpl;
 use crate::json_rpc::res::GetBlockRes;
 use crate::json_rpc::res::RescanConfidence;
 use crate::json_rpc::server::SERIALIZATION_EXPECT_MSG;
-use crate::json_rpc::server::to_core_asm_string;
 
 impl<Blockchain: RpcChain> RpcImpl<Blockchain> {
     async fn get_block_inner(&self, hash: BlockHash) -> Result<Block, JsonRpcError> {
@@ -565,7 +565,7 @@ impl<Blockchain: RpcChain> RpcImpl<Blockchain> {
                     Err(_) => None,
                 };
 
-                let asm = to_core_asm_string(&txout.script_pubkey, false);
+                let asm = txout.script_pubkey.to_core_asm_string(false);
                 let script_pubkey = ScriptPubKey {
                     asm,
                     hex: txout.script_pubkey.to_hex_string(),
