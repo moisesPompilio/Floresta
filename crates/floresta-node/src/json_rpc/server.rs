@@ -35,6 +35,7 @@ use corepc_types::v31::RawTransactionInput;
 use corepc_types::v31::RawTransactionOutput;
 use floresta_chain::ThreadSafeChain;
 use floresta_chain::extensions::ScriptBufExt;
+use floresta_common::json_request::Request;
 use floresta_compact_filters::flat_filters_store::FlatFiltersStore;
 use floresta_compact_filters::network_filters::NetworkFilters;
 use floresta_watch_only::AddressCache;
@@ -53,10 +54,6 @@ use tracing::info;
 
 use super::res::GetRawTransactionRes;
 use super::res::jsonrpc_interface::JsonRpcError;
-use crate::json_rpc::request::RpcRequest;
-use crate::json_rpc::request::arg_parser::get_at;
-use crate::json_rpc::request::arg_parser::get_with_default;
-use crate::json_rpc::request::arg_parser::try_into_optional;
 use crate::json_rpc::res::RescanConfidence;
 use crate::json_rpc::res::jsonrpc_interface::Response;
 
@@ -202,32 +199,25 @@ impl<Blockchain: RpcChain> RpcImpl<Blockchain> {
 }
 
 async fn handle_json_rpc_request(
-    req: RpcRequest,
+    req: Request,
     state: Arc<RpcImpl<impl RpcChain>>,
 ) -> Result<Value> {
-    let RpcRequest {
-        jsonrpc,
-        method,
-        params,
-        id,
-    } = req;
-
-    if let Some(version) = jsonrpc {
+    if let Some(ref version) = req.jsonrpc {
         if !["1.0", "2.0"].contains(&version.as_str()) {
             return Err(JsonRpcError::InvalidJsonRpcVersion);
         }
     }
 
     state.inflight.write().await.insert(
-        id.clone(),
+        req.id.clone(),
         InflightRpc {
-            method: method.clone(),
+            method: req.method.clone(),
             when: Instant::now(),
         },
     );
 
     // Methods that don't require params
-    match method.as_str() {
+    match req.method.as_str() {
         "getbestblockhash" => {
             return state
                 .get_best_block_hash()
@@ -293,20 +283,11 @@ async fn handle_json_rpc_request(
         _ => {}
     }
 
-    // Methods that do require parameters.
-    //
-    // Here we use `unwrap_or_default()` because there are methods with only optional
-    // parameters.
-    // Therefore, even if the request is parsed and the `params` field was omitted it's nice
-    // to turn it into `Some(Value)` so the job of gathering inputs for calling the inner
-    // rpc method goes to the getters under request.rs.
-    let params = params.unwrap_or_default();
-
-    match method.as_str() {
+    match req.method.as_str() {
         "addnode" => {
-            let node = get_at(&params, 0, "node")?;
-            let command = get_at(&params, 1, "command")?;
-            let v2transport = get_with_default(&params, 2, "V2transport", false)?;
+            let node = req.get_at(0, "node")?;
+            let command = req.get_at(1, "command")?;
+            let v2transport = req.get_with_default(2, "V2transport", false)?;
 
             state
                 .add_node(node, command, v2transport)
@@ -315,8 +296,8 @@ async fn handle_json_rpc_request(
         }
 
         "disconnectnode" => {
-            let node_address = get_at(&params, 0, "node_address")?;
-            let node_id = try_into_optional(get_at(&params, 1, "node_id"))?;
+            let node_address = req.get_at(0, "node_address")?;
+            let node_id = req.get_optional(1, "node_id")?;
 
             state
                 .disconnect_node(node_address, node_id)
@@ -325,18 +306,18 @@ async fn handle_json_rpc_request(
         }
 
         "findtxout" => {
-            let txid = get_at(&params, 0, "txid")?;
-            let vout = get_at(&params, 1, "vout")?;
-            let script: String = get_at(&params, 2, "script")?;
+            let txid = req.get_at(0, "txid")?;
+            let vout = req.get_at(1, "vout")?;
+            let script: String = req.get_at(2, "script")?;
             let script = ScriptBuf::from_hex(&script).map_err(|_| JsonRpcError::InvalidScript)?;
-            let height = get_at(&params, 3, "height")?;
+            let height = req.get_at(3, "height")?;
 
             state.clone().find_tx_out(txid, vout, script, height).await
         }
 
         "getblock" => {
-            let hash = get_at(&params, 0, "block_hash")?;
-            let verbosity = get_with_default(&params, 1, "verbosity", 1)?;
+            let hash = req.get_at(0, "block_hash")?;
+            let verbosity = req.get_with_default(1, "verbosity", 1)?;
 
             state
                 .get_block(hash, verbosity)
@@ -345,7 +326,7 @@ async fn handle_json_rpc_request(
         }
 
         "getblockfrompeer" => {
-            let hash = get_at(&params, 0, "block_hash")?;
+            let hash = req.get_at(0, "block_hash")?;
 
             state.get_block(hash, 0).await?;
 
@@ -353,15 +334,15 @@ async fn handle_json_rpc_request(
         }
 
         "getblockhash" => {
-            let height = get_at(&params, 0, "block_height")?;
+            let height = req.get_at(0, "block_height")?;
             state
                 .get_block_hash(height)
                 .map(|h| serde_json::to_value(h).expect(SERIALIZATION_EXPECT_MSG))
         }
 
         "getblockheader" => {
-            let hash = get_at(&params, 0, "block_hash")?;
-            let verbosity = get_with_default(&params, 1, "verbosity", true)?;
+            let hash = req.get_at(0, "block_hash")?;
+            let verbosity = req.get_with_default(1, "verbosity", true)?;
 
             state
                 .get_block_header(hash, verbosity)
@@ -370,7 +351,7 @@ async fn handle_json_rpc_request(
         }
 
         "getmemoryinfo" => {
-            let mode: String = get_with_default(&params, 0, "mode", "stats".into())?;
+            let mode: String = req.get_with_default(0, "mode", "stats".into())?;
 
             state
                 .get_memory_info(&mode)
@@ -378,8 +359,8 @@ async fn handle_json_rpc_request(
         }
 
         "getrawtransaction" => {
-            let txid = get_at(&params, 0, "txid")?;
-            let verbosity = get_with_default(&params, 1, "verbosity", 0)?;
+            let txid = req.get_at(0, "txid")?;
+            let verbosity = req.get_with_default(1, "verbosity", 0)?;
 
             state
                 .get_raw_transaction(txid, verbosity)
@@ -387,7 +368,7 @@ async fn handle_json_rpc_request(
         }
 
         "getdeploymentinfo" => {
-            let blockhash = try_into_optional(get_at(&params, 0, "blockhash"))?;
+            let blockhash = req.get_optional(0, "blockhash")?;
 
             state
                 .get_deployment_info(blockhash)
@@ -403,9 +384,9 @@ async fn handle_json_rpc_request(
             .map(|v| serde_json::to_value(v).expect(SERIALIZATION_EXPECT_MSG)),
 
         "gettxout" => {
-            let txid = get_at(&params, 0, "txid")?;
-            let vout = get_at(&params, 1, "vout")?;
-            let include_mempool = get_with_default(&params, 2, "include_mempool", false)?;
+            let txid = req.get_at(0, "txid")?;
+            let vout = req.get_at(1, "vout")?;
+            let include_mempool = req.get_with_default(2, "include_mempool", false)?;
 
             state
                 .get_tx_out(txid, vout, include_mempool)
@@ -413,8 +394,8 @@ async fn handle_json_rpc_request(
         }
 
         "gettxoutproof" => {
-            let txids: Vec<Txid> = get_at(&params, 0, "txids")?;
-            let block_hash = try_into_optional(get_at(&params, 1, "block_hash"))?;
+            let txids: Vec<Txid> = req.get_at(0, "txids")?;
+            let block_hash = req.get_optional(1, "block_hash")?;
 
             state
                 .get_txout_proof(&txids, block_hash)
@@ -423,7 +404,7 @@ async fn handle_json_rpc_request(
         }
 
         "loaddescriptor" => {
-            let descriptor = get_at(&params, 0, "descriptor")?;
+            let descriptor = req.get_at(0, "descriptor")?;
 
             state
                 .load_descriptor(descriptor)
@@ -431,10 +412,10 @@ async fn handle_json_rpc_request(
         }
 
         "rescanblockchain" => {
-            let start_height = get_with_default(&params, 0, "start_height", 0)?;
-            let stop_height = get_with_default(&params, 1, "stop_height", 0)?;
-            let use_timestamp = get_with_default(&params, 2, "use_timestamp", false)?;
-            let confidence = get_with_default(&params, 3, "confidence", RescanConfidence::Medium)?;
+            let start_height = req.get_with_default(0, "start_height", 0)?;
+            let stop_height = req.get_with_default(1, "stop_height", 0)?;
+            let use_timestamp = req.get_with_default(2, "use_timestamp", false)?;
+            let confidence = req.get_with_default(3, "confidence", RescanConfidence::Medium)?;
 
             state
                 .rescan_blockchain(start_height, stop_height, use_timestamp, confidence)
@@ -442,7 +423,7 @@ async fn handle_json_rpc_request(
         }
 
         "sendrawtransaction" => {
-            let tx = get_at(&params, 0, "hex")?;
+            let tx = req.get_at(0, "hex")?;
             state
                 .send_raw_transaction(tx)
                 .await
@@ -457,7 +438,7 @@ async fn json_rpc_request(
     State(state): State<Arc<RpcImpl<impl RpcChain>>>,
     body: Bytes,
 ) -> HttpResponse<Body> {
-    let Ok(req): std::result::Result<RpcRequest, _> = serde_json::from_slice(&body) else {
+    let Ok(req): std::result::Result<Request, _> = serde_json::from_slice(&body) else {
         let error = JsonRpcError::InvalidRequest;
         let body = Response::error(error.rpc_error(), Value::Null);
         return HttpResponse::builder()

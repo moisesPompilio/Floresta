@@ -49,7 +49,7 @@ libc = { version = "=0.2.186" }
 [features]
 compact-filters = ["dep:floresta-compact-filters"]
 zmq-server = ["dep:zmq"]
-json-rpc = ["dep:axum", "dep:tower-http", "compact-filters"]
+json-rpc = ["dep:axum", "dep:tower-http", "compact-filters", "floresta-common/json_request"]
 default = ["json-rpc"]
 metrics = ["dep:metrics", "floresta-wire/metrics", "floresta-chain/metrics"]
 

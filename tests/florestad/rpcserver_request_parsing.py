@@ -21,10 +21,9 @@ from test_framework.constants import (
     JSONRPC_ERRCODE_METHOD_NOT_FOUND,
     JSONRPC_ERRMSG_INVALID_VERSION,
     JSONRPC_ERRMSG_METHOD_NOT_FOUND,
-    JSONRPC_ERRMSG_MISSING_PARAMS,
-    JSONRPC_ERRMSG_WRONG_PARAM_TYPE,
     METHODS_REQUIRING_PARAMS,
     NO_PARAM_METHODS,
+    JSONRPC_ERRMSG_REQUEST_ERROR,
 )
 
 
@@ -121,7 +120,7 @@ class TestRpcServerRequestParsing:
             params=[],
             expected_status_code=400,
             expected_rpcerror_code=JSONRPC_ERRCODE_INVALID_PARAMS,
-            expected_message=JSONRPC_ERRMSG_MISSING_PARAMS,
+            expected_message=JSONRPC_ERRMSG_REQUEST_ERROR,
         )
 
         # {} is an empty object, so it should be accepted as an object
@@ -131,7 +130,7 @@ class TestRpcServerRequestParsing:
             params={},
             expected_status_code=400,
             expected_rpcerror_code=JSONRPC_ERRCODE_INVALID_PARAMS,
-            expected_message=JSONRPC_ERRMSG_MISSING_PARAMS,
+            expected_message=JSONRPC_ERRMSG_REQUEST_ERROR,
         )
 
     def test_paramtypes_wrongtype_returnsinvalidparams(self, shared_florestad_node):
@@ -143,7 +142,7 @@ class TestRpcServerRequestParsing:
             params=["not_a_number"],
             expected_status_code=400,
             expected_rpcerror_code=JSONRPC_ERRCODE_INVALID_PARAMS,
-            expected_message=JSONRPC_ERRMSG_WRONG_PARAM_TYPE,
+            expected_message=JSONRPC_ERRMSG_REQUEST_ERROR,
         )
 
         # getblock hash expects a string, but 12345 is a number - params must be array
@@ -152,7 +151,7 @@ class TestRpcServerRequestParsing:
             params=[12345],
             expected_status_code=400,
             expected_rpcerror_code=JSONRPC_ERRCODE_INVALID_PARAMS,
-            expected_message=JSONRPC_ERRMSG_WRONG_PARAM_TYPE,
+            expected_message=JSONRPC_ERRMSG_REQUEST_ERROR,
         )
 
         genesis_hash = shared_florestad_node.rpc.get_bestblockhash()
@@ -161,7 +160,7 @@ class TestRpcServerRequestParsing:
             params=[genesis_hash, "invalid_verbosity"],
             expected_status_code=400,
             expected_rpcerror_code=JSONRPC_ERRCODE_INVALID_PARAMS,
-            expected_message=JSONRPC_ERRMSG_WRONG_PARAM_TYPE,
+            expected_message=JSONRPC_ERRMSG_REQUEST_ERROR,
         )
 
     def test_jsonrpcversion_invalid_returnsrejection(self, shared_florestad_node):
@@ -194,7 +193,7 @@ class TestRpcServerRequestParsing:
                 method=method,
                 expected_status_code=400,
                 expected_rpcerror_code=JSONRPC_ERRCODE_INVALID_PARAMS,
-                expected_message=JSONRPC_ERRMSG_MISSING_PARAMS,
+                expected_message=JSONRPC_ERRMSG_REQUEST_ERROR,
             )
 
     def test_responsestructure_success_matchesjsonrpcspec(self, shared_florestad_node):

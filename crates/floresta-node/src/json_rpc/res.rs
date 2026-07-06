@@ -43,6 +43,7 @@ pub mod jsonrpc_interface {
     use floresta_chain::BlockchainError;
     use floresta_chain::extensions::HeaderExtError;
     use floresta_common::impl_error_from;
+    use floresta_common::json_request::RequestError;
     use floresta_domain::mempool::MempoolError;
     use floresta_watch_only::WatchOnlyError;
     use floresta_wire::bitcoin_socket_addr::InvalidAddressError;
@@ -169,14 +170,8 @@ pub mod jsonrpc_interface {
         /// Rescan requested with invalid values.
         InvalidRescanVal,
 
-        /// A required parameter is missing from the request.
-        MissingParameter(String),
-
-        /// A parameter have an unexpected type (e.g. number where string was expected).
-        InvalidParameterType(String),
-
-        /// A parameter is malformated, the parameter MUST be an array or an object
-        InvalidParameterStructure(String),
+        /// Request error, for example invalid or missing parameters.
+        RequestError(RequestError),
 
         /// The request contains a invalid jsonrpc version
         InvalidJsonRpcVersion,
@@ -257,6 +252,7 @@ pub mod jsonrpc_interface {
 
     impl_error_from!(JsonRpcError, MempoolError, MempoolAccept);
     impl_error_from!(JsonRpcError, InvalidAddressError, InvalidNetAddress);
+    impl_error_from!(JsonRpcError, RequestError, RequestError);
 
     impl JsonRpcError {
         pub fn http_code(&self) -> StatusCode {
@@ -276,9 +272,7 @@ pub mod jsonrpc_interface {
                 | Self::InvalidTimestamp
                 | Self::InvalidRescanVal
                 | Self::NoAddressesToRescan
-                | Self::InvalidParameterType(_)
-                | Self::InvalidParameterStructure(_)
-                | Self::MissingParameter(_)
+                | Self::RequestError(_)
                 | Self::InvalidNetAddress(_)
                 | Self::Wallet(_) => StatusCode::BAD_REQUEST,
 
@@ -371,28 +365,17 @@ pub mod jsonrpc_interface {
                     message: "Invalid rescan values".into(),
                     data: None,
                 },
-                Self::InvalidParameterType(param) => RpcError {
+                Self::RequestError(e) => RpcError {
                     code: INVALID_METHOD_PARAMETERS,
-                    message: "Invalid parameter type".into(),
-                    data: Some(Value::String(param.clone())),
-                },
-                Self::InvalidParameterStructure(param) => RpcError {
-                    code: INVALID_METHOD_PARAMETERS,
-                    message:
-                        "A parameter is malformated, the parameter MUST be an array or an object"
-                            .into(),
-                    data: Some(Value::String(param.clone())),
+                    message: "Request error".into(),
+                    data: Some(Value::String(e.to_string())),
                 },
                 Self::InvalidJsonRpcVersion => RpcError {
                     code: INVALID_REQUEST,
                     message: "The request contains a invalid jsonrpc version".into(),
                     data: None,
                 },
-                Self::MissingParameter(param) => RpcError {
-                    code: INVALID_METHOD_PARAMETERS,
-                    message: "Missing parameter".into(),
-                    data: Some(Value::String(param.clone())),
-                },
+
                 Self::InvalidNetAddress(err) => RpcError {
                     code: INVALID_METHOD_PARAMETERS,
                     message: "Invalid network address provided".into(),
