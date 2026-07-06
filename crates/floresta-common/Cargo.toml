@@ -16,10 +16,14 @@ hashbrown = { version = "=0.17.0" }
 sha2 = { workspace = true }
 spin = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true, optional = true}
+serde_json = { workspace = true, optional = true}
+
 
 [features]
 default = ["std"]
 std = ["bitcoin/std", "sha2/std"]
+json_request=["serde", "serde_json"]
 
 [lints]
 workspace = true

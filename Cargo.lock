@@ -1061,6 +1061,8 @@ version = "0.5.0"
 dependencies = [
  "bitcoin",
  "hashbrown 0.17.0",
+ "serde",
+ "serde_json",
  "sha2",
  "spin",
  "tracing",

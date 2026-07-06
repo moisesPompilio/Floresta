@@ -36,6 +36,9 @@ pub mod spsc;
 pub use ema::Ema;
 pub use spsc::Channel;
 
+#[cfg(feature = "json_request")]
+pub mod json_request;
+
 /// Computes the SHA-256 digest of the byte slice data and returns a [Hash] from `bitcoin_hashes`.
 ///
 /// [Hash]: https://docs.rs/bitcoin_hashes/latest/bitcoin_hashes/sha256/struct.Hash.html
