@@ -14,7 +14,6 @@ use serde::Serialize;
 
 pub mod electrum_protocol;
 pub mod error;
-pub mod request;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TransactionHistoryEntry {

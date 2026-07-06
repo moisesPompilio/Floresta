@@ -11,7 +11,6 @@ use std::time::Instant;
 use bitcoin::ScriptBuf;
 use bitcoin::Transaction;
 use bitcoin::TxOut;
-use bitcoin::Txid;
 use bitcoin::consensus::deserialize;
 use bitcoin::consensus::encode::serialize_hex;
 use bitcoin::hashes::hex::FromHex;
@@ -19,6 +18,8 @@ use bitcoin::hashes::sha256;
 use floresta_chain::pruned_utreexo::BlockchainInterface;
 use floresta_common::get_hash_from_u8;
 use floresta_common::get_spk_hash;
+use floresta_common::json_request::Request;
+use floresta_common::json_request::RequestError;
 use floresta_common::spsc::Channel;
 use floresta_common::try_and_log;
 use floresta_compact_filters::flat_filters_store::FlatFiltersStore;
@@ -47,9 +48,8 @@ use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
-use crate::get_arg;
+use crate::error::Error;
 use crate::json_rpc_res;
-use crate::request::Request;
 
 /// How often do we re-broadcast our transactions, until it gets confirmed
 ///
@@ -263,32 +263,32 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
         &mut self,
         client: Arc<Client>,
         request: Request,
-    ) -> Result<Value, super::error::Error> {
+    ) -> Result<Value, Error> {
         // Methods are in alphabetical order
         match request.method.as_str() {
             "blockchain.block.header" => {
-                let height = get_arg!(request, u32, 0);
+                let height = request.get_at(0, "height")?;
                 let hash = self
                     .chain
                     .get_block_hash(height)
-                    .map_err(|_| super::error::Error::InvalidParams)?;
+                    .map_err(|_| Error::NotFound)?;
                 let header = self
                     .chain
                     .get_block_header(&hash)
-                    .map_err(|e| super::error::Error::Blockchain(Box::new(e)))?;
+                    .map_err(|e| Error::Blockchain(Box::new(e)))?;
                 let header = serialize_hex(&header);
                 json_rpc_res!(request, header)
             }
             "blockchain.block.headers" => {
                 const MAX_COUNT: u32 = 2016;
 
-                let start_height = get_arg!(request, u32, 0);
-                let count = get_arg!(request, u32, 1).min(MAX_COUNT);
+                let start_height: u32 = request.get_at(0, "start_height")?;
+                let count = request.get_at::<u32>(1, "count")?.min(MAX_COUNT);
 
                 let chain_height = self
                     .chain
                     .get_height()
-                    .map_err(|e| super::error::Error::Blockchain(Box::new(e)))?;
+                    .map_err(|e| Error::Blockchain(Box::new(e)))?;
 
                 let end_height =
                     (chain_height.saturating_add(1)).min(start_height.saturating_add(count));
@@ -313,11 +313,11 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
                 let (height, hash) = self
                     .chain
                     .get_best_block()
-                    .map_err(|e| super::error::Error::Blockchain(Box::new(e)))?;
+                    .map_err(|e| Error::Blockchain(Box::new(e)))?;
                 let header = self
                     .chain
                     .get_block_header(&hash)
-                    .map_err(|e| super::error::Error::Blockchain(Box::new(e)))?;
+                    .map_err(|e| Error::Blockchain(Box::new(e)))?;
                 let result = json!({
                     "height": height,
                     "hex": serialize_hex(&header)
@@ -327,7 +327,7 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
             // TODO: Ask Backend for fees
             "blockchain.relayfee" => json_rpc_res!(request, 0.00001),
             "blockchain.scripthash.get_balance" => {
-                let script_hash = get_arg!(request, sha256::Hash, 0);
+                let script_hash = request.get_at(0, "script_hash")?;
                 let balance = self.address_cache.get_address_balance(&script_hash);
                 let result = json!({
                     "confirmed": balance,
@@ -336,7 +336,7 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
                 json_rpc_res!(request, result)
             }
             "blockchain.scripthash.get_history" => {
-                let script_hash = get_arg!(request, sha256::Hash, 0);
+                let script_hash = request.get_at(0, "script_hash")?;
                 self.address_cache
                     .get_address_history(&script_hash)
                     .map(|transactions| {
@@ -353,7 +353,7 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
             }
             "blockchain.scripthash.get_mempool" => json_rpc_res!(request, []),
             "blockchain.scripthash.listunspent" => {
-                let hash = get_arg!(request, sha256::Hash, 0);
+                let hash = request.get_at(0, "script_hash")?;
                 let utxos = self.address_cache.get_address_utxos(&hash);
                 if utxos.is_none() {
                     return json_rpc_res!(request, []);
@@ -373,7 +373,7 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
                 json_rpc_res!(request, final_utxos)
             }
             "blockchain.scripthash.subscribe" => {
-                let hash = get_arg!(request, sha256::Hash, 0);
+                let hash = request.get_at(0, "script_hash")?;
                 self.client_addresses.insert(hash, client);
 
                 let history = self.address_cache.get_address_history(&hash);
@@ -388,14 +388,14 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
                 }
             }
             "blockchain.scripthash.unsubscribe" => {
-                let address = get_arg!(request, sha256::Hash, 0);
-                self.client_addresses.remove(&address);
+                let script: sha256::Hash = request.get_at(0, "script_hash")?;
+                self.client_addresses.remove(&script);
                 json_rpc_res!(request, true)
             }
 
             // those endpoinsts are experimental and aren't implemented by any other implementation yet
             "blockchain.scriptpubkey.get_balance" => {
-                let script = get_arg!(request, ScriptBuf, 0);
+                let script = request.get_at(0, "script")?;
                 let hash = get_spk_hash(&script);
 
                 if !self.address_cache.is_address_cached(&hash) {
@@ -416,7 +416,7 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
                 json_rpc_res!(request, result)
             }
             "blockchain.scriptpubkey.get_history" => {
-                let script = get_arg!(request, ScriptBuf, 0);
+                let script = request.get_at(0, "script")?;
                 let hash = get_spk_hash(&script);
 
                 if !self.address_cache.is_address_cached(&hash) {
@@ -440,7 +440,7 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
                     })
             }
             "blockchain.scriptpubkey.subscribe" => {
-                let script = get_arg!(request, ScriptBuf, 0);
+                let script = request.get_at(0, "script")?;
                 let hash = get_spk_hash(&script);
                 self.client_addresses.insert(hash, client);
 
@@ -460,7 +460,7 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
                 }
             }
             "blockchain.scriptpubkey.unsubscribe" => {
-                let script = get_arg!(request, ScriptBuf, 0);
+                let script = request.get_at(0, "script")?;
                 let hash = get_spk_hash(&script);
                 self.client_addresses.remove(&hash);
                 json_rpc_res!(request, true)
@@ -468,11 +468,15 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
 
             // end of experimental endpoints
             "blockchain.transaction.broadcast" => {
-                let tx = get_arg!(request, String, 0);
-                let hex: Vec<_> =
-                    Vec::from_hex(&tx).map_err(|_| super::error::Error::InvalidParams)?;
-                let tx: Transaction =
-                    deserialize(&hex).map_err(|_| super::error::Error::InvalidParams)?;
+                let raw_tx: String = request.get_at(0, "raw_tx")?;
+
+                let tx_bytes = Vec::from_hex(&raw_tx).map_err(|e| {
+                    Error::RequestError(RequestError::InvalidParameterType(e.to_string()))
+                })?;
+
+                let tx: Transaction = deserialize(&tx_bytes).map_err(|e| {
+                    Error::RequestError(RequestError::InvalidParameterType(e.to_string()))
+                })?;
 
                 let txid = tx.compute_txid();
                 if let Err(e) = self
@@ -481,7 +485,7 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
                     .await?
                 {
                     error!("Could not broadcast transaction {txid} due to {e}");
-                    return Err(super::error::Error::Mempool(Box::new(e)));
+                    return Err(Error::Mempool(Box::new(e)));
                 };
 
                 let updated = self
@@ -495,16 +499,16 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
                 json_rpc_res!(request, txid)
             }
             "blockchain.transaction.get" => {
-                let tx_id = get_arg!(request, Txid, 0);
+                let tx_id = request.get_at(0, "tx_hash")?;
                 let tx = self.address_cache.get_cached_transaction(&tx_id);
                 if let Some(tx) = tx {
                     return json_rpc_res!(request, tx);
                 }
 
-                Err(super::error::Error::InvalidParams)
+                Err(Error::NotFound)
             }
             "blockchain.transaction.get_merkle" => {
-                let tx_id = get_arg!(request, Txid, 0);
+                let tx_id = request.get_at(0, "tx_hash")?;
                 let proof = self.address_cache.get_merkle_proof(&tx_id);
                 let height = self.address_cache.get_height(&tx_id);
                 if let Some(proof) = proof {
@@ -516,7 +520,7 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
                     return json_rpc_res!(request, result);
                 }
 
-                Err(super::error::Error::InvalidParams)
+                Err(Error::NotFound)
             }
             //blockchain.transaction.id_from_pos
             // TODO: Create an actual histogram
@@ -551,7 +555,7 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
                 [format!("Floresta {}", env!("CARGO_PKG_VERSION")), "1.4"]
             ),
 
-            _ => Err(super::error::Error::InvalidParams),
+            _ => Err(Error::InvalidMethod),
         }
     }
 
@@ -627,10 +631,7 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
     /// Usually, we'll rely on compact block filters to speed things up. If
     /// we don't have compact block filters, we may rescan using the older,
     /// more bandwidth-intensive method of actually downloading blocks.
-    async fn rescan_for_addresses(
-        &mut self,
-        addresses: Vec<ScriptBuf>,
-    ) -> Result<(), super::error::Error> {
+    async fn rescan_for_addresses(&mut self, addresses: Vec<ScriptBuf>) -> Result<(), Error> {
         // If compact block filters are enabled, use them. Otherwise, fallback
         // to the "old-school" rescaning.
         if let Some(cfilters) = &self.block_filters {
@@ -650,7 +651,7 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
         start_height: Option<u32>,
         stop_height: Option<u32>,
         addresses: Vec<ScriptBuf>,
-    ) -> Result<(), super::error::Error> {
+    ) -> Result<(), Error> {
         // By default, we look from 1..tip
         let mut _addresses = addresses
             .iter()
@@ -940,7 +941,7 @@ macro_rules! get_arg {
         if let Some(arg) = $request.params.get($idx) {
             serde_json::from_value::<$arg_type>(arg.clone())?
         } else {
-            return Err(super::error::Error::InvalidParams);
+            return Err(Error::InvalidParams);
         }
     };
 }

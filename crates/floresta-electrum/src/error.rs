@@ -4,12 +4,17 @@ use core::error;
 use core::fmt;
 
 use floresta_common::impl_error_from;
+use floresta_common::json_request::RequestError;
 use tokio::sync::oneshot;
 
 #[derive(Debug)]
 pub enum Error {
-    /// The parameter is invalid.
-    InvalidParams,
+    /// Invalid Method
+    InvalidMethod,
+    /// The requested resource was not found.
+    NotFound,
+    /// The request is Error;
+    RequestError(RequestError),
     /// The JSON string is invalid.
     Parsing(serde_json::Error),
     /// A blockchain error has occurred.
@@ -25,7 +30,9 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidParams => write!(f, "The provided parameter is invalid"),
+            Self::InvalidMethod => write!(f, "Invalid method"),
+            Self::NotFound => write!(f, "Not found"),
+            Self::RequestError(e) => write!(f, "Request error: {e}"),
             Self::Parsing(e) => write!(f, "Invalid JSON string: {e}"),
             Self::Blockchain(e) => write!(f, "Blockchain error: {e}"),
             Self::Io(e) => write!(f, "IO error: {e}"),
@@ -38,7 +45,9 @@ impl fmt::Display for Error {
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
-            Self::InvalidParams => None,
+            Self::RequestError(e) => Some(e),
+            Self::InvalidMethod => None,
+            Self::NotFound => None,
             Self::Parsing(e) => Some(e),
             Self::Blockchain(e) => Some(e.as_ref()),
             Self::Io(e) => Some(e),
@@ -51,3 +60,4 @@ impl error::Error for Error {
 impl_error_from!(Error, serde_json::Error, Parsing);
 impl_error_from!(Error, std::io::Error, Io);
 impl_error_from!(Error, oneshot::error::RecvError, NodeHandle);
+impl_error_from!(Error, RequestError, RequestError);

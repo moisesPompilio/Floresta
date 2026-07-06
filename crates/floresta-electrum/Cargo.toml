@@ -28,7 +28,7 @@ tracing = { workspace = true }
 # Local dependencies
 floresta-chain = { workspace = true, features = ["bitcoinkernel"] }
 floresta-compact-filters = { workspace = true }
-floresta-common = { workspace = true }
+floresta-common = { workspace = true, features = ["json_request"] }
 floresta-watch-only = { workspace = true }
 floresta-wire = { workspace = true }
 
