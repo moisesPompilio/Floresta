@@ -14,9 +14,11 @@ use std::sync::Mutex;
 #[cfg(feature = "json-rpc")]
 use std::sync::OnceLock;
 
+use async_trait::async_trait;
 use bitcoin::Address;
 pub use bitcoin::Network;
 use bitcoin::ScriptBuf;
+use bitcoin::Txid;
 pub use floresta_chain::AssumeUtreexoValue;
 pub use floresta_chain::AssumeValidArg;
 use floresta_chain::ChainParams;
@@ -31,6 +33,7 @@ use floresta_compact_filters::flat_filters_store::FlatFiltersStore;
 #[cfg(feature = "compact-filters")]
 use floresta_compact_filters::network_filters::NetworkFilters;
 use floresta_electrum::electrum_protocol::ElectrumServer;
+use floresta_electrum::electrum_protocol::RpcCommunication;
 use floresta_electrum::electrum_protocol::client_accept_loop;
 use floresta_mempool::Mempool;
 use floresta_watch_only::AddressCache;
@@ -67,6 +70,8 @@ use crate::error::FlorestadError;
 use crate::florestad::fs::OpenOptions;
 #[cfg(feature = "json-rpc")]
 use crate::json_rpc;
+use crate::json_rpc::server::RpcChain;
+use crate::json_rpc::server::RpcImpl;
 #[cfg(feature = "zmq-server")]
 use crate::zmq::ZMQServer;
 
@@ -487,13 +492,16 @@ impl Florestad {
         }
 
         // Electrum Server configuration.
-
+        let rpc_comm: Arc<dyn RpcCommunication> = Arc::new(RpcCommunicationByElectrum {
+            rpc: rpc_impl.clone(),
+        });
         // Instantiate the Electrum Server.
         let electrum_server = ElectrumServer::new(
             wallet,
             blockchain_state,
             cfilters,
             chain_provider.get_handle(),
+            rpc_comm,
         )
         .map_err(FlorestadError::CouldNotCreateElectrumServer)?;
 
@@ -903,5 +911,25 @@ impl From<Config> for Florestad {
             #[cfg(feature = "json-rpc")]
             json_rpc: OnceLock::new(),
         }
+    }
+}
+
+pub struct RpcCommunicationByElectrum<Blockchain: RpcChain> {
+    rpc: Arc<RpcImpl<Blockchain>>,
+}
+
+#[async_trait]
+impl<Blockchain: RpcChain> RpcCommunication for RpcCommunicationByElectrum<Blockchain> {
+    async fn get_raw_transaction(
+        &self,
+        txid: Txid,
+        verbosity: u8,
+    ) -> Result<serde_json::Value, floresta_electrum::error::Error> {
+        let result = self
+            .rpc
+            .get_raw_transaction(txid, verbosity)
+            .map_err(|e| floresta_electrum::error::Error::RpcError(e.rpc_error().message))?;
+
+        Ok(serde_json::to_value(result)?)
     }
 }

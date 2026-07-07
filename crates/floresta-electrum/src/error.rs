@@ -13,6 +13,8 @@ pub enum Error {
     InvalidMethod,
     /// The requested resource was not found.
     NotFound,
+    /// RPC error
+    RpcError(String),
     /// The request is Error;
     RequestError(RequestError),
     /// The JSON string is invalid.
@@ -32,6 +34,7 @@ impl fmt::Display for Error {
         match self {
             Self::InvalidMethod => write!(f, "Invalid method"),
             Self::NotFound => write!(f, "Not found"),
+            Self::RpcError(e) => write!(f, "RPC error: {e}"),
             Self::RequestError(e) => write!(f, "Request error: {e}"),
             Self::Parsing(e) => write!(f, "Invalid JSON string: {e}"),
             Self::Blockchain(e) => write!(f, "Blockchain error: {e}"),
@@ -48,6 +51,7 @@ impl error::Error for Error {
             Self::RequestError(e) => Some(e),
             Self::InvalidMethod => None,
             Self::NotFound => None,
+            Self::RpcError(_) => None,
             Self::Parsing(e) => Some(e),
             Self::Blockchain(e) => Some(e.as_ref()),
             Self::Io(e) => Some(e),

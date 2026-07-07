@@ -94,7 +94,11 @@ pub struct RpcImpl<Blockchain: RpcChain> {
 type Result<T> = std::result::Result<T, JsonRpcError>;
 
 impl<Blockchain: RpcChain> RpcImpl<Blockchain> {
-    fn get_raw_transaction(&self, tx_id: Txid, verbosity: u8) -> Result<GetRawTransactionRes> {
+    pub(crate) fn get_raw_transaction(
+        &self,
+        tx_id: Txid,
+        verbosity: u8,
+    ) -> Result<GetRawTransactionRes> {
         if verbosity > 1 {
             return Err(JsonRpcError::InvalidVerbosityLevel);
         }

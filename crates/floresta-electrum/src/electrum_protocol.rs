@@ -8,9 +8,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use async_trait::async_trait;
 use bitcoin::ScriptBuf;
 use bitcoin::Transaction;
 use bitcoin::TxOut;
+use bitcoin::Txid;
 use bitcoin::consensus::deserialize;
 use bitcoin::consensus::encode::serialize_hex;
 use bitcoin::hashes::hex::FromHex;
@@ -182,6 +184,15 @@ pub enum Message {
     Disconnect(ClientId),
 }
 
+#[async_trait]
+pub trait RpcCommunication: Send + Sync {
+    async fn get_raw_transaction(
+        &self,
+        txid: Txid,
+        verbosity: u8,
+    ) -> Result<Value, crate::error::Error>;
+}
+
 pub struct ElectrumServer<Blockchain: BlockchainInterface> {
     /// The blockchain backend we are using. This will be used to query
     /// blockchain information and broadcast transactions.
@@ -227,6 +238,8 @@ pub struct ElectrumServer<Blockchain: BlockchainInterface> {
     /// sure our transactions don't get stuck in the mempool if they are not getting confirmed for
     /// some reason. We keep track of this time to know when to re-broadcast them.
     last_rebroadcast: Option<Instant>,
+
+    rpc: Arc<dyn RpcCommunication>,
 }
 
 impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
@@ -235,6 +248,7 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
         chain: Arc<Blockchain>,
         block_filters: Option<Arc<NetworkFilters<FlatFiltersStore>>>,
         node_interface: NodeHandle,
+        rpc: Arc<dyn RpcCommunication>,
     ) -> Result<Self, Box<dyn error::Error>> {
         let (tx, rx) = unbounded_channel();
 
@@ -249,6 +263,7 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
             message_transmitter: tx,
             client_addresses: HashMap::new(),
             addresses_to_scan: Vec::new(),
+            rpc,
         })
     }
 
@@ -500,12 +515,16 @@ impl<Blockchain: BlockchainInterface> ElectrumServer<Blockchain> {
             }
             "blockchain.transaction.get" => {
                 let tx_id = request.get_at(0, "tx_hash")?;
-                let tx = self.address_cache.get_cached_transaction(&tx_id);
-                if let Some(tx) = tx {
-                    return json_rpc_res!(request, tx);
-                }
+                let verbosity = request.get_optional(2, "verbosity")?;
 
-                Err(Error::NotFound)
+                let verbosity = match verbosity {
+                    Some(true) => 1,
+                    _ => 0,
+                };
+
+                let tx = self.rpc.get_raw_transaction(tx_id, verbosity).await?;
+
+                return json_rpc_res!(request, tx);
             }
             "blockchain.transaction.get_merkle" => {
                 let tx_id = request.get_at(0, "tx_hash")?;
@@ -934,18 +953,6 @@ macro_rules! json_rpc_res {
     }
 }
 
-#[macro_export]
-/// Returns and parses a value from the request json or fails with [super::error::Error::InvalidParams].
-macro_rules! get_arg {
-    ($request:ident, $arg_type:ty, $idx:literal) => {
-        if let Some(arg) = $request.params.get($idx) {
-            serde_json::from_value::<$arg_type>(arg.clone())?
-        } else {
-            return Err(Error::InvalidParams);
-        }
-    };
-}
-
 #[cfg(test)]
 mod test {
     use core::str::FromStr;
@@ -953,13 +960,16 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use async_trait::async_trait;
     use bitcoin::Address;
     use bitcoin::Network;
     use bitcoin::Transaction;
+    use bitcoin::Txid;
     use bitcoin::address::NetworkChecked;
     use bitcoin::block::Header as BlockHeader;
     use bitcoin::consensus::Decodable;
     use bitcoin::consensus::deserialize;
+    use bitcoin::consensus::encode::serialize_hex;
     use bitcoin::hashes::hex::FromHex;
     use bitcoin::hashes::sha256;
     use floresta_chain::AssumeValidArg;
@@ -996,12 +1006,30 @@ mod test {
     use tokio_rustls::rustls::pki_types::PrivateKeyDer;
     use tokio_rustls::rustls::pki_types::pem::PemObject;
 
+    use crate::electrum_protocol::RpcCommunication;
+
     use super::ElectrumServer;
     use super::client_accept_loop;
 
     /// A size used for mempool tests, no specific meaning just a randomly
     /// chosen size.
     const MEMPOOL_SIZE: usize = 10_000;
+
+    struct MockRpcCommunication {
+        wallet: Arc<AddressCache<KvDatabase>>,
+    }
+
+    #[async_trait]
+    impl RpcCommunication for MockRpcCommunication {
+        async fn get_raw_transaction(
+            &self,
+            txid: Txid,
+            _verbosity: u8,
+        ) -> Result<Value, crate::error::Error> {
+            let result = self.wallet.get_transaction(&txid).unwrap();
+            Ok(serde_json::Value::String(serialize_hex(&result.tx)))
+        }
+    }
 
     fn get_test_transaction() -> (Transaction, MerkleProof) {
         // Signet transaction with id 6bb0665122c7dcecc6e6c45b6384ee2bdce148aea097896e6f3e9e08070353ea
@@ -1130,8 +1158,14 @@ mod test {
         let tls_config = Some(create_tls_config().expect("Failed to create TLS config"));
         let tls_acceptor = tls_config.map(TlsAcceptor::from);
 
-        let electrum_server: ElectrumServer<ChainState<FlatChainStore>> =
-            ElectrumServer::new(wallet, chain, None, node_interface).unwrap();
+        let electrum_server: ElectrumServer<ChainState<FlatChainStore>> = ElectrumServer::new(
+            wallet.clone(),
+            chain,
+            None,
+            node_interface,
+            Arc::new(MockRpcCommunication { wallet }),
+        )
+        .unwrap();
         let non_tls_listener = Arc::new(TcpListener::bind(e_addr).await.unwrap());
         let assigned_port = non_tls_listener.local_addr().unwrap().port();
 
@@ -1430,6 +1464,9 @@ mod test {
         ])
         .to_string();
         get_merkle_req.push('\n');
+
+        let request = send_request(broadcast_req.clone(), port).await.unwrap();
+        println!("request, {request}");
 
         assert_eq!(
             send_request(broadcast_req, port).await.unwrap()["result"],
