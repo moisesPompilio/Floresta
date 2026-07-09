@@ -26,6 +26,25 @@ from test_framework.node import Node, NodeType
 from test_framework.util import Utility
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-security",
+        action="store_true",
+        default=False,
+        help="Run tests marked with the security marker",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-security"):
+        return
+
+    skip_security = pytest.mark.skip(reason="need --run-security to run security tests")
+    for item in items:
+        if "security" in item.keywords:
+            item.add_marker(skip_security)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def validate_and_check_environment():
     """Validate environment and check for required binaries before running tests."""
