@@ -120,6 +120,7 @@ class Node:
         targetdir: str,
         tls: bool,
         log,
+        network: str = "regtest",
     ) -> "Node":
         """
         Create a node with default arguments. this argument
@@ -128,7 +129,7 @@ class Node:
         allowing the node's arguments to be modified after creation.
         """
         config_rpc = cls.create_config_rpc_default(variant=variant)
-        config_p2p = cls.create_config_p2p_default()
+        config_p2p = cls.create_config_p2p_default(network=network)
         config_electrum = cls.create_config_electrum_default(tls=tls)
 
         node = cls(
@@ -226,12 +227,14 @@ class Node:
         )
 
     @staticmethod
-    def create_config_p2p_default() -> ConfigP2P:
+    def create_config_p2p_default(network: str = "regtest") -> ConfigP2P:
         """
         Create a default P2P configuration for nodes.
         The port is random.
         """
-        return ConfigP2P(host="127.0.0.1", port=Utility.get_random_port())
+        return ConfigP2P(
+            host="127.0.0.1", port=Utility.get_random_port(), network=network
+        )
 
     @staticmethod
     def create_config_electrum_default(tls: bool) -> ConfigElectrum:

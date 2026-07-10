@@ -20,13 +20,14 @@ class FlorestaDaemon(BaseDaemon):
     regtest mode for tests.
     """
 
-    def get_cmd_network(self) -> List[str]:
+    def get_cmd_network(self, network) -> List[str]:
         """
         Return the network configuration flags for the node.
         """
-        return [
-            "--network=regtest",
-        ]
+        if network == "mainnet":
+            return []
+
+        return [f"--network={network}"]
 
     def get_cmd_data_dir(self, data_dir: str) -> List[str]:
         """

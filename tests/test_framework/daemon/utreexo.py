@@ -21,12 +21,14 @@ class UtreexoDaemon(BaseDaemon):
     and utreexo proofs for tests.
     """
 
-    def get_cmd_network(self) -> List[str]:
+    def get_cmd_network(self, network) -> List[str]:
         """
         Return the network configuration flags for the node.
         """
+        if network == "mainnet":
+            return []
         return [
-            "--regtest",
+            f"--{network}",
         ]
 
     def get_cmd_data_dir(self, data_dir: str) -> List[str]:

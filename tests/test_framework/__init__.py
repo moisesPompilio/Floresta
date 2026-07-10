@@ -153,8 +153,23 @@ class FlorestaTestFramework:
             variant=variant, extra_args=extra_args, tls=False
         )
 
+    def add_node_with_network(self, variant: NodeType, network: str) -> Node:
+        """
+        Add a node with the specified variant and network configuration.
+
+        This function uses default configurations for RPC, P2P, and Electrum,
+        and applies the provided network configuration to the node.
+        """
+        return self._add_node_default_config(
+            variant=variant, extra_args=[], tls=False, network=network
+        )
+
     def _add_node_default_config(
-        self, variant: NodeType, extra_args: List[str], tls: bool
+        self,
+        variant: NodeType,
+        extra_args: List[str],
+        tls: bool,
+        network: str = "regtest",
     ) -> Node:
 
         tempdir = str(Utility.get_integration_test_dir())
@@ -168,6 +183,7 @@ class FlorestaTestFramework:
             targetdir=targetdir,
             tls=tls,
             log=self.log,
+            network=network,
         )
 
         self._nodes.append(node)

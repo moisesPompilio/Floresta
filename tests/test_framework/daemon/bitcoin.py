@@ -20,12 +20,14 @@ class BitcoinDaemon(BaseDaemon):
     regtest mode for tests.
     """
 
-    def get_cmd_network(self) -> List[str]:
+    def get_cmd_network(self, network) -> List[str]:
         """
         Return the network configuration flags for the node.
         """
+        if network == "mainnet":
+            return []
         return [
-            "-chain=regtest",
+            f"-chain={network}",
         ]
 
     def get_cmd_data_dir(self, data_dir: str) -> List[str]:

@@ -143,7 +143,7 @@ class BaseDaemon(ABC):
 
     def settings(self) -> List[str]:
         """Getter for `settings` property"""
-        setting: List[str] = self.get_cmd_network()
+        setting: List[str] = self.get_cmd_network(self._p2p_config.network)
 
         if len(self._extra_args) >= 1:
             setting.extend(self._extra_args)
@@ -198,7 +198,7 @@ class BaseDaemon(ABC):
         self.log.debug(self.log_msg(f"Starting node '{self.name}': {' '.join(cmd)}"))
 
     @abstractmethod
-    def get_cmd_network(self) -> List[str]:
+    def get_cmd_network(self, network: str) -> List[str]:
         """
         Return the network configuration flags for the node.
         """
