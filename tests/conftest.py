@@ -373,3 +373,39 @@ def add_node_with_extra_args(node_manager):
         return node
 
     return _create_node
+
+
+@pytest.fixture
+def add_signet_node(node_manager):
+    """
+    Creates and starts a node with a specified network, based on the
+    specified variant.
+    """
+
+    def _create_node(variant: NodeType) -> Node:
+        node = node_manager.add_node_with_network(
+            variant=variant,
+            network="signet",
+        )
+        node_manager.run_node(node)
+        return node
+
+    return _create_node
+
+
+@pytest.fixture
+def add_mainnet_node(node_manager):
+    """
+    Creates and starts a node with a specified network, based on the
+    specified variant.
+    """
+
+    def _create_node(variant: NodeType) -> Node:
+        node = node_manager.add_node_with_network(
+            variant=variant,
+            network="mainnet",
+        )
+        node_manager.run_node(node)
+        return node
+
+    return _create_node
