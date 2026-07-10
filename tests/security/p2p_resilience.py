@@ -129,14 +129,7 @@ class TestP2pResilience:
             msg_sendtxrcncl,
         ]
 
-        # Limit to 8 random message types for performance reasons.
-        # Testing all supported message types would cause excessive test duration.
-        # Each message type requires two P2P connections (v1 and v2) and a spam cycle,
-        # so testing all ~37 types would be impractical for CI/CD pipelines.
-        selected = sample(message_classes, k=min(8, len(message_classes)))
-        self.log.info(f"Randomly selected messages: {[m.msgtype for m in selected]}")
-
-        for msg_class in selected:
+        for msg_class in message_classes:
             self.log.info(f"Testing {msg_class.__name__}")
             self.connect_p2p()
 
@@ -207,14 +200,7 @@ class TestP2pResilience:
             msg_sendtxrcncl(),
         ]
 
-        # Limit to 2 random message types for performance reasons.
-        # Testing all supported message types would cause excessive test duration.
-        # Each message type requires two P2P connections (v1 and v2) and a spam cycle,
-        # so testing all ~37 types would be impractical for CI/CD pipelines.
-        selected = sample(message_classes, k=min(2, len(message_classes)))
-        self.log.info(f"Randomly selected messages: {[m.msgtype for m in selected]}")
-
-        for msg in selected:
+        for msg in message_classes:
             msg_type = msg.msgtype
             self.log.info(f"Testing {msg_type}")
             self.connect_p2p()
