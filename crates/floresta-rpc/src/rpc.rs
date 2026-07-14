@@ -7,7 +7,7 @@ use bitcoin::Txid;
 use corepc_types::v29::GetTxOut;
 use corepc_types::v30::GetAddrManInfo;
 use corepc_types::v30::GetBlockchainInfo;
-use corepc_types::v30::GetDeploymentInfo;
+use corepc_types::v31::GetDeploymentInfo;
 use serde::Serialize;
 use serde::de::Deserialize;
 use serde::de::DeserializeOwned;
