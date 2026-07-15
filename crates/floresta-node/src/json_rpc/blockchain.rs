@@ -29,10 +29,9 @@ use corepc_types::v31::CoinbaseTransaction;
 use corepc_types::v31::DeploymentInfo;
 use corepc_types::v31::GetBlockVerboseOne;
 use corepc_types::v31::GetDeploymentInfo;
-use floresta_chain::buried_deployments_for;
+use floresta_chain::extensions::ChainParamsExt;
 use floresta_chain::extensions::HeaderExt;
 use floresta_chain::extensions::WorkExt;
-use floresta_chain::get_script_flags;
 use floresta_wire::node_interface::ChainMethods;
 use miniscript::descriptor::checksum;
 use serde_json::Value;
@@ -412,9 +411,10 @@ impl<Blockchain: RpcChain> RpcImpl<Blockchain> {
             .map_err(|_| JsonRpcError::Chain)?
             .ok_or(JsonRpcError::BlockNotFound)?;
 
+        let chain_params = self.chain.get_chain_params();
         let mut deployments = BTreeMap::new();
 
-        for &(name, activation_height) in buried_deployments_for(self.network) {
+        for (name, activation_height) in chain_params.buried_deployments_for() {
             deployments.insert(
                 name.to_deployment_name().into(),
                 DeploymentInfo {
@@ -426,7 +426,8 @@ impl<Blockchain: RpcChain> RpcImpl<Blockchain> {
             );
         }
 
-        let script_flags = get_script_flags(self.network, target_hash, height)
+        let script_flags = chain_params
+            .get_script_flags(target_hash, height)
             .into_iter()
             .collect();
 
