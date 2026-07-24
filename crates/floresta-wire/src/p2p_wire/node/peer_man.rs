@@ -288,6 +288,7 @@ where
             peer_data.services = version.services;
             peer_data.user_agent.clone_from(&version.user_agent);
             peer_data.height = version.blocks;
+            peer_data.time_offset = version.time_offset;
             peer_data.transport_protocol = version.transport_protocol;
 
             // If this peer doesn't have basic services, we disconnect it
@@ -868,10 +869,16 @@ where
             address: peer.address.as_bitcoin_socket_addr().clone(),
             services: format!("{:016x}", peer.services.to_u64()),
             services_names: service_flags_strings(&peer.services),
+            relay_txs: false,
             user_agent: peer.user_agent.clone(),
+            inbound: false,
+            bip152_hb_to: false,
+            bip152_hb_from: false,
             initial_height: peer.height,
+            time_offset: peer.time_offset,
             state: peer.state,
             kind: peer.kind,
+            permissions: Vec::new(),
             transport_protocol: peer.transport_protocol,
         })
     }

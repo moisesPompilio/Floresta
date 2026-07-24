@@ -82,6 +82,7 @@ impl SimulatedPeer {
                 | service_flags::UTREEXO_ARCHIVE.into()
                 | ServiceFlags::WITNESS
                 | ServiceFlags::COMPACT_FILTERS,
+            time_offset: 0,
             kind: ConnectionKind::Regular(service_flags::UTREEXO.into()),
             transport_protocol: TransportProtocol::V2,
         };
@@ -179,6 +180,7 @@ pub fn create_peer(
         services: service_flags::UTREEXO.into(),
         user_agent: "/utreexo:0.1.0/".to_string(),
         height: 0,
+        time_offset: 0,
         state: PeerStatus::Ready,
         channel: sender,
         kind: ConnectionKind::Regular(service_flags::UTREEXO.into()),

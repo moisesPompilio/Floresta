@@ -238,6 +238,7 @@ where
                 _last_message: Instant::now(),
                 kind,
                 height: 0,
+                time_offset: 0,
                 banscore: 0,
                 // Will be downgraded to V1 if the V2 handshake fails, and we allow fallback
                 transport_protocol: TransportProtocol::V2,

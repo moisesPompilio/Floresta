@@ -221,6 +221,9 @@ pub struct LocalPeerView {
     /// The latest height this peer has announced to us
     pub(crate) height: u32,
 
+    /// The peer time offset in seconds, computed from its version message timestamp
+    pub(crate) time_offset: i64,
+
     /// The banscore of this peer
     ///
     /// This is a score kept for each peer, every time this peer misbehaves, we
