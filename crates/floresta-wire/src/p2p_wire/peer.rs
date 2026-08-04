@@ -7,6 +7,8 @@ use core::fmt::Formatter;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use bitcoin::Block;
 use bitcoin::BlockHash;
@@ -135,6 +137,7 @@ pub struct Peer<T: AsyncWrite + Unpin + Send + Sync> {
     mempool: Arc<Mutex<dyn MempoolBase>>,
     blocks_only: bool,
     services: ServiceFlags,
+    time_offset: i64,
     user_agent: String,
     messages: u64,
     start_time: Instant,
@@ -653,6 +656,7 @@ impl<T: AsyncWrite + Unpin + Send + Sync> Peer<T> {
                             blocks: self.current_best_block.unsigned_abs(),
                             address_id: self.address.id,
                             services: self.services,
+                            time_offset: self.time_offset,
                             kind: self.kind,
                             transport_protocol: self.transport_protocol,
                         }),
@@ -729,6 +733,7 @@ impl<T: AsyncWrite + Unpin + Send + Sync> Peer<T> {
             last_addrv2: Instant::now() - ADDRV2_MESSAGE_INTERVAL,
             node_tx,
             services: ServiceFlags::NONE,
+            time_offset: 0,
             messages: 0,
             start_time: Instant::now(),
             user_agent: "".into(),
@@ -755,6 +760,11 @@ impl<T: AsyncWrite + Unpin + Send + Sync> Peer<T> {
     }
 
     async fn handle_version(&mut self, version: VersionMessage) -> Result<()> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should not be before UNIX epoch")
+            .as_secs() as i64;
+        self.time_offset = version.timestamp.saturating_sub(now);
         self.user_agent = version.user_agent;
         self.blocks_only = !version.relay;
         self.current_best_block = version.start_height;
@@ -854,6 +864,7 @@ pub struct Version {
     pub id: u32,
     pub address_id: usize,
     pub services: ServiceFlags,
+    pub time_offset: i64,
     pub kind: ConnectionKind,
     pub transport_protocol: TransportProtocol,
 }
@@ -974,6 +985,7 @@ mod tests {
             mempool: Arc::new(Mutex::new(Mempool::new(1000))),
             node_tx,
             services: ServiceFlags::NONE,
+            time_offset: 0,
             messages: 0,
             shutdown: false,
             last_ping: Some(Instant::now()),
