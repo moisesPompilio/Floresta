@@ -32,6 +32,8 @@ pub use p2p_wire::block_proof;
 #[cfg(not(target_arch = "wasm32"))]
 pub use p2p_wire::error;
 #[cfg(not(target_arch = "wasm32"))]
+pub use p2p_wire::network_message_ext;
+#[cfg(not(target_arch = "wasm32"))]
 pub use p2p_wire::node;
 #[cfg(not(target_arch = "wasm32"))]
 pub use p2p_wire::node_context;
