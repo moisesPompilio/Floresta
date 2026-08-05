@@ -97,5 +97,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "p2p_v2_message"
+path = "fuzz_targets/p2p_v2_message.rs"
+test = false
+doc = false
+bench = false
+
 [lints]
 workspace = true
