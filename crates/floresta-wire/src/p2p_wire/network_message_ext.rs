@@ -118,14 +118,13 @@ impl NetworkMessageExt for NetworkMessage {
                     .consensus_encode(&mut buffer)
                     .expect("Encoding to Vec<u8> never fails");
             }
-            Self::Unknown {
-                command,
-                payload: _,
-            } => {
+            Self::Unknown { command, payload } => {
                 buffer.push(0u8);
                 command
                     .consensus_encode(&mut buffer)
                     .expect("Encoding to Vec<u8> never fails");
+                buffer.extend(payload);
+                return buffer;
             }
         }
 
@@ -173,6 +172,19 @@ impl NetworkMessageExt for NetworkMessage {
                         ),
                     )));
                 };
+                let command_end = command_buffer
+                    .iter()
+                    .position(|byte| *byte == 0)
+                    .unwrap_or(command_buffer.len());
+                let command_is_valid = command_buffer[..command_end]
+                    .iter()
+                    .all(|byte| (0x20..=0x7e).contains(byte))
+                    && command_buffer[command_end..].iter().all(|byte| *byte == 0);
+                if !command_is_valid {
+                    return Err(V2MessageError::Deserialize(encode::Error::ParseFailed(
+                        "Invalid command string",
+                    )));
+                }
                 let command = CommandString::consensus_decode(&mut command_buffer)
                     .map_err(V2MessageError::Deserialize)?;
                 payload_buffer = &buffer[13..];
@@ -290,6 +302,7 @@ impl NetworkMessageExt for NetworkMessage {
 
 #[cfg(test)]
 mod tests {
+    use bitcoin::p2p::message::CommandString;
     use bitcoin::p2p::message::NetworkMessage;
 
     use super::NetworkMessageExt;
@@ -313,5 +326,28 @@ mod tests {
             NetworkMessage::deserialize_v2(&verack).expect("valid verack frame"),
             NetworkMessage::Verack
         );
+    }
+
+    #[test]
+    fn unknown_v2_message_roundtrip() {
+        let message = NetworkMessage::Unknown {
+            command: CommandString::try_from_static("uproof").expect("valid command"),
+            payload: vec![0xf8, 0x08],
+        };
+
+        let encoded = message.serialize_v2();
+        let decoded =
+            NetworkMessage::deserialize_v2(&encoded).expect("serialized message must decode");
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn deserialize_v2_rejects_invalid_command() {
+        let invalid_command = [
+            0, 0x7e, 0xa9, 0xa9, 0xa9, 0xa9, 0x1c, 0xa9, 0xa9, 0xa9, 0xa9, 0xa9, 0,
+        ];
+
+        assert!(NetworkMessage::deserialize_v2(&invalid_command).is_err());
     }
 }
