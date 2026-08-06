@@ -119,7 +119,9 @@ impl MempoolBase for Mempool {
             txdata: txs,
         };
 
-        block.header.merkle_root = block.compute_merkle_root().unwrap();
+        block.header.merkle_root = block
+            .compute_merkle_root()
+            .unwrap_or_else(TxMerkleNode::all_zeros);
         block
     }
 
@@ -576,6 +578,23 @@ mod tests {
 
         assert_eq!(block.txdata.len(), 1);
         assert!(block.check_merkle_root());
+    }
+
+    #[test]
+    fn test_gbt_empty_mempool() {
+        let mempool = Mempool::new(10_000_000);
+
+        let target = Target::MAX_ATTAINABLE_REGTEST;
+        let block = mempool.get_block_template(
+            block::Version::ONE,
+            bitcoin::BlockHash::all_zeros(),
+            0,
+            target.to_compact_lossy(),
+            4_000_000,
+        );
+
+        assert!(block.txdata.is_empty());
+        assert_eq!(block.header.merkle_root, TxMerkleNode::all_zeros());
     }
 
     #[test]
