@@ -1091,9 +1091,11 @@ dependencies = [
  "arbitrary",
  "bitcoin",
  "floresta-chain",
+ "floresta-mempool",
  "floresta-wire",
  "libfuzzer-sys",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -1204,7 +1206,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tonic",
- "tonic-prost",
  "tracing",
  "ureq",
  "zstd",
