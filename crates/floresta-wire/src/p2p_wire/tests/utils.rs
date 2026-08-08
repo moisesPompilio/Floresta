@@ -59,6 +59,9 @@ pub struct UtreexoRoots {
     numleaves: usize,
 }
 
+// Nightly Clippy false positive in `Constructor`-generated code:
+// https://github.com/rust-lang/rust-clippy/issues/17525
+#[allow(clippy::redundant_field_names)]
 #[derive(Debug, Constructor)]
 pub struct SimulatedPeer {
     headers: Vec<Header>,
@@ -286,6 +289,9 @@ pub fn mutated_block_h7() -> Block {
     ).unwrap()
 }
 
+// Nightly Clippy false positive in `Constructor`-generated code:
+// https://github.com/rust-lang/rust-clippy/issues/17525
+#[allow(clippy::redundant_field_names)]
 #[derive(Clone, Constructor)]
 /// The chain data that our simulated peer will have
 pub struct PeerData {
