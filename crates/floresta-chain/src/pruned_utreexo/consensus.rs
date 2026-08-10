@@ -182,6 +182,7 @@ impl Consensus {
     /// - The first transaction in the block must be coinbase
     /// - The coinbase transaction must have the correct value (subsidy + fees)
     /// - The block must not create more coins than allowed
+    /// - No output may be spent more than once within the block
     /// - All transactions must be valid, as verified by [`Consensus::verify_transaction`]
     #[allow(unused)]
     pub fn verify_block_transactions(
@@ -374,6 +375,10 @@ impl Consensus {
     ///   - Doesn't "move" more coins than allowed (at most 21 million)
     ///   - Spends mature coins, in case any input refers to a coinbase transaction
     ///   - Has valid scripts (if we don't assume them), and within the allowed size
+    ///
+    /// Inputs are removed from `utxos` as they are loaded, independently of script validation.
+    /// This makes them unavailable to later transactions in the same block. Callers should treat
+    /// `utxos` as scratch validation state and discard it if this function returns an error.
     pub fn verify_transaction(
         transaction: &Transaction,
         utxos: &mut HashMap<OutPoint, UtxoData>,
@@ -385,11 +390,13 @@ impl Consensus {
 
         let out_value = Self::check_transaction_context_free(transaction)?;
 
+        // Take ownership of the inputs so later transactions cannot spend them again.
+        // This vector keeps the UTXOs in tx-input order, as required by bitcoinkernel.
+        let mut spent_utxos = Vec::with_capacity(transaction.input.len());
+
         let mut in_value = Amount::ZERO;
         for input in &transaction.input {
-            // Null PrevOuts already checked in the previous step
-
-            let utxo = Self::get_utxo(input, utxos, txid)?;
+            let utxo = Self::take_utxo(input, utxos, txid)?;
             let txout = &utxo.txout;
 
             // A coinbase output created at height n can only be spent at height >= n + 100
@@ -403,6 +410,8 @@ impl Consensus {
             in_value = in_value
                 .checked_add(txout.value)
                 .ok_or(BlockValidationErrors::TooManyCoins)?;
+
+            spent_utxos.push(utxo);
         }
 
         // Sanity check
@@ -418,16 +427,17 @@ impl Consensus {
         // Verify the tx script
         #[cfg(feature = "bitcoinkernel")]
         if _verify_script {
-            Self::verify_input_scripts(transaction, utxos, _flags)?;
-        };
+            Self::verify_input_scripts(transaction, &spent_utxos, _flags)?;
+        }
 
         Ok((in_value, out_value))
     }
 
     #[cfg(feature = "bitcoinkernel")]
+    /// Verifies each input script against the transaction-local UTXOs, in input order.
     fn verify_input_scripts(
         transaction: &Transaction,
-        utxos: &mut HashMap<OutPoint, UtxoData>,
+        spent_utxos: &[UtxoData],
         flags: c_uint,
     ) -> Result<(), BlockchainError> {
         let tx = serialize(&transaction);
@@ -436,28 +446,25 @@ impl Consensus {
         let tx = bitcoinkernel::Transaction::try_from(tx.as_slice())
             .map_err(|e| tx_err!(txid, ScriptValidationError, e.to_string()))?;
 
-        let mut spent_utxos = Vec::new();
-        let mut spent_scripts = Vec::new();
+        let mut prevouts = Vec::with_capacity(spent_utxos.len());
+        let mut prevout_data = Vec::with_capacity(spent_utxos.len());
 
-        for input in &transaction.input {
-            let spent_output = utxos
-                .remove(&input.previous_output)
-                .ok_or_else(|| tx_err!(txid, UtxoNotFound, input.previous_output))?
-                .txout;
+        for utxo in spent_utxos {
+            let txout = &utxo.txout;
 
-            let value = i64::try_from(spent_output.value.to_sat())
-                .map_err(|_| tx_err!(txid, TooManyCoins))?;
-            let spk = bitcoinkernel::ScriptPubkey::try_from(spent_output.script_pubkey.as_bytes())
+            let value =
+                i64::try_from(txout.value.to_sat()).map_err(|_| tx_err!(txid, TooManyCoins))?;
+            let spk = bitcoinkernel::ScriptPubkey::try_from(txout.script_pubkey.as_bytes())
                 .map_err(|e| tx_err!(txid, ScriptValidationError, e.to_string()))?;
 
-            spent_utxos.push(bitcoinkernel::TxOut::new(&spk, value));
-            spent_scripts.push((spk, value));
+            prevouts.push(bitcoinkernel::TxOut::new(&spk, value));
+            prevout_data.push((spk, value));
         }
 
-        let tx_data = PrecomputedTransactionData::new(&tx, &spent_utxos)
+        let tx_data = PrecomputedTransactionData::new(&tx, &prevouts)
             .map_err(|e| tx_err!(txid, ScriptValidationError, e.to_string()))?;
 
-        for (input_index, (script, amount)) in spent_scripts.iter().enumerate() {
+        for (input_index, (script, amount)) in prevout_data.iter().enumerate() {
             bitcoinkernel::verify(
                 script,
                 Some(*amount),
@@ -634,21 +641,18 @@ impl Consensus {
         Self::verify_block_transactions_swiftsync(height, block, txids, unspent_indexes, salt)
     }
 
-    /// Returns the TxOut being spent by the given input.
+    /// Removes and returns the UTXO spent by `input`.
     ///
-    /// Fails if the UTXO is not present in the given hashmap.
-    fn get_utxo<'a, F: Fn() -> Txid>(
+    /// Removing inputs here is consensus-critical: a later transaction in the same block must not
+    /// be able to spend the same output. Fails if the UTXO is missing or was already spent.
+    fn take_utxo<F: Fn() -> Txid>(
         input: &TxIn,
-        utxos: &'a HashMap<OutPoint, UtxoData>,
+        utxos: &mut HashMap<OutPoint, UtxoData>,
         txid: F,
-    ) -> Result<&'a UtxoData, TransactionError> {
-        match utxos.get(&input.previous_output) {
-            Some(utxo) => Ok(utxo),
-            // This is the case when the spender:
-            // - Spends an UTXO that doesn't exist
-            // - Spends an UTXO that was already spent
-            None => Err(tx_err!(txid, UtxoNotFound, input.previous_output)),
-        }
+    ) -> Result<UtxoData, TransactionError> {
+        utxos
+            .remove(&input.previous_output)
+            .ok_or_else(|| tx_err!(txid, UtxoNotFound, input.previous_output))
     }
 
     /// Returns whether a transaction's absolute lock time is final for a candidate block.
@@ -1489,7 +1493,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "bitcoinkernel")]
-    fn test_consume_utxos() {
+    fn script_verified_transaction_consumes_inputs() {
         // Transaction extracted from https://learnmeabitcoin.com/explorer/tx/0094492b6f010a5e39c2aacc97396ce9b6082dc733a7b4151ccdbd580f789278
         // Mock data for testing
 
@@ -1512,18 +1516,13 @@ mod tests {
                 creation_time: 0,
             },
         );
-        let mut utxos_clone = utxos.clone();
-
-        // Test consuming UTXOs with both high and low-level functions
         let flags = bitcoinkernel::VERIFY_P2SH;
         Consensus::verify_transaction(&tx, &mut utxos, 0, true, flags)
             .expect("Transaction should be valid");
-        Consensus::verify_input_scripts(&tx, &mut utxos_clone, flags)
-            .expect("Transaction should be valid");
 
-        // Check that the UTXO was consumed
+        // Script verification uses the transaction-local UTXOs, while the block-wide map retains
+        // only outputs available to later transactions.
         assert!(utxos.is_empty(), "UTXO should be consumed");
-        assert!(utxos_clone.is_empty(), "UTXO should be consumed");
 
         // Trying to verify again with an empty UTXO map must fail with this error
         let expected = tx_err!(txid, UtxoNotFound, outpoint);
@@ -1532,7 +1531,34 @@ mod tests {
             Err(BlockchainError::TransactionError(e)) => assert_eq!(e, expected),
             other => panic!("Expected TransactionError, got: {other:?}"),
         }
-        match Consensus::verify_input_scripts(&tx, &mut utxos_clone, flags) {
+    }
+
+    #[test]
+    fn rejects_cross_transaction_double_spend_without_script_checks() {
+        let outpoint = dummy_outpoint();
+        let mut utxos = HashMap::from([(
+            outpoint,
+            UtxoData {
+                txout: txout!(1, ScriptBuf::new()),
+                is_coinbase: false,
+                creation_height: 0,
+                creation_time: 0,
+            },
+        )]);
+
+        let first = build_tx(vec![txin!(outpoint)], vec![txout!(1, ScriptBuf::new())]);
+        let second = build_tx(vec![txin!(outpoint)], vec![txout!(0, ScriptBuf::new())]);
+
+        // Block validation carries this scratch map from one transaction to the next, including
+        // when script checks are skipped during AssumeValid validation.
+        Consensus::verify_transaction(&first, &mut utxos, 0, false, 0)
+            .expect("first spend should be valid");
+        assert!(utxos.is_empty(), "spent input must leave the UTXO map");
+
+        // Trying to verify again with an empty UTXO map must fail with this error
+        let expected = tx_err!(|| second.compute_txid(), UtxoNotFound, outpoint);
+
+        match Consensus::verify_transaction(&second, &mut utxos, 0, false, 0) {
             Err(BlockchainError::TransactionError(e)) => assert_eq!(e, expected),
             other => panic!("Expected TransactionError, got: {other:?}"),
         }
