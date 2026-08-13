@@ -2041,6 +2041,42 @@ mod test {
     }
 
     #[test]
+    fn test_calc_next_work_required_underflow() {
+        let first_block: BlockHeader = deserialize_hex("0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a008f4d5fae77031e8ad22203").unwrap();
+        let last_block: BlockHeader = deserialize_hex("00000020dec6741f7dc5df6661bcb2d3ec2fceb14bd0e6def3db80da904ed1eeb8000000d1f308132e6a72852c04b059e92928ea891ae6d513cd3e67436f908c804ec7be51df535fae77031e4d00f800").unwrap();
+
+        // The "first" block has a timestamp later than the "last" one, so computing the
+        // timespan `last.time - first.time` should underflow.
+        //
+        // The saturating subtraction yields a timespan of 0, which gets clamped to
+        // `pow_target_timespan / 4`, quartering the target.
+        let next_target = Consensus::calc_next_work_required(
+            &first_block,
+            &last_block,
+            ChainParams::from(Network::Signet),
+        );
+
+        assert!((first_block.time as i32 - last_block.time as i32) < 0);
+
+        assert_eq!(0x1e00ddeb, next_target.to_compact_lossy().to_consensus());
+
+        let mut new_last = last_block;
+        new_last.time = first_block.time;
+
+        assert!(first_block.time - new_last.time == 0);
+
+        // Since the time value is saturated and clamped, them being exactly equal should
+        // make the result to be the same.
+        let next_target = Consensus::calc_next_work_required(
+            &first_block,
+            &new_last,
+            ChainParams::from(Network::Signet),
+        );
+
+        assert_eq!(0x1e00ddeb, next_target.to_compact_lossy().to_consensus());
+    }
+
+    #[test]
     fn test_reorg() {
         let chain = setup_test_chain(Network::Regtest, AssumeValidArg::Hardcoded, None);
         let json_blocks = include_str!("../../testdata/test_reorg.json");

@@ -771,7 +771,7 @@ impl Consensus {
         first_block: &BlockHeader,
         params: ChainParams,
     ) -> Target {
-        let actual_timespan = last_block.time - first_block.time;
+        let actual_timespan = last_block.time.saturating_sub(first_block.time);
         // from bip 94:
         //  a. The base difficulty value MUST be taken from the first block of the previous
         //     difficulty period
