@@ -31,7 +31,7 @@ required-features = ["chain-flat-chainstore", "mempool", "wire"]
 [[example]]
 name = "watch-only"
 path = "examples/watch_only.rs"
-required-features = ["common", "watch-only-memory-database"]
+required-features = ["chain", "common", "watch-only-memory-database"]
 
 [dependencies]
 floresta-chain = { path = "../floresta-chain", optional = true, default-features = false }

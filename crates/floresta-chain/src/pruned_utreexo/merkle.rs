@@ -38,8 +38,10 @@ use bitcoin::TxMerkleNode;
 use bitcoin::Txid;
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256d;
 use bitcoin_hashes::HashEngine as _;
 use bitcoin_hashes::Sha256d;
+use floresta_common::MerkleBackend;
 
 use super::consensus::Consensus;
 
@@ -128,6 +130,57 @@ impl Consensus {
     }
 }
 
+impl MerkleBackend for ConsensusMerkle {
+    /// Computes the sibling hashes needed to prove a transaction's inclusion.
+    ///
+    /// Returns `None` when `leaves` is empty or `position` is out of bounds.
+    /// For valid positions, this is equivalent to Bitcoin Core's
+    /// [`TransactionMerklePath`], using the same batched level reduction as
+    /// [`ConsensusMerkle::calculate_root`].
+    ///
+    /// Example:
+    ///
+    /// ```text
+    ///                 root (0)
+    ///           ┌─────────┴─────────┐
+    ///        H01 (0)             H23 (1)
+    ///      ┌────┴────┐         ┌────┴────┐
+    ///    0 (00)    1 (01)    2 (10)    3 (11)
+    /// ```
+    ///
+    /// Parentheses contain each node's binary index within its level. At each level,
+    /// `position ^ 1` selects the sibling and `position >> 1` selects the parent.
+    /// When a sibling is missing, Bitcoin's odd-tail rule uses the current node itself.
+    ///
+    /// [`TransactionMerklePath`]: https://github.com/bitcoin/bitcoin/blob/v31.0/src/consensus/merkle.cpp#L172-L180
+    fn calculate_branch(
+        &self,
+        leaves: &[sha256d::Hash],
+        mut position: usize,
+    ) -> Option<Vec<sha256d::Hash>> {
+        if position >= leaves.len() {
+            return None;
+        }
+
+        let mut level: Vec<[u8; 32]> = leaves.iter().map(|hash| hash.to_byte_array()).collect();
+        let mut inputs = Vec::<[u8; 64]>::with_capacity(level.len().div_ceil(2));
+        let mut branch = Vec::new();
+
+        while level.len() > 1 {
+            // Flip the low bit to switch between the left and right child of a pair.
+            // If the sibling is missing, Bitcoin's odd-tail rule duplicates the final child.
+            let sibling = level.get(position ^ 1).copied().unwrap_or(level[position]);
+            branch.push(sha256d::Hash::from_byte_array(sibling));
+
+            Self::reduce_level(&mut level, &mut inputs);
+            // Move to the parent index.
+            position >>= 1;
+        }
+
+        Some(branch)
+    }
+}
+
 #[rustfmt::skip]
 /// Computes a non-witness transaction ID using the newer `bitcoin_hashes` SHA256d engine.
 ///
@@ -165,7 +218,9 @@ mod tests {
     use bitcoin::Txid;
     use bitcoin::constants::genesis_block;
     use bitcoin::hashes::Hash;
+    use bitcoin::hashes::sha256d;
     use bitcoin::merkle_tree;
+    use floresta_common::MerkleBackend;
 
     use crate::pruned_utreexo::consensus::Consensus;
     use crate::pruned_utreexo::merkle::ConsensusMerkle;
@@ -187,6 +242,51 @@ mod tests {
             let actual = ConsensusMerkle::calculate_root(&txids);
             assert_eq!(actual.map(|(root, _)| root), expected);
             assert!(!actual.is_some_and(|(_, mutated)| mutated));
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_branch_positions() {
+        assert!(ConsensusMerkle.calculate_branch(&[], 0).is_none());
+
+        let leaves = [Txid::all_zeros().to_raw_hash()];
+        assert!(
+            ConsensusMerkle
+                .calculate_branch(&leaves, leaves.len())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn branches_reconstruct_root() {
+        for count in 1..=16 {
+            let txids = unique_txids(count);
+            let leaves: Vec<_> = txids.iter().map(|txid| txid.to_raw_hash()).collect();
+            let expected_root = merkle_tree::calculate_root(leaves.iter().copied()).unwrap();
+
+            for (position, leaf) in leaves.iter().copied().enumerate() {
+                let branch = ConsensusMerkle.calculate_branch(&leaves, position).unwrap();
+
+                let mut hash = leaf;
+                let mut index = position;
+
+                for sibling in branch {
+                    let (left, right) = if index & 1 == 0 {
+                        (hash, sibling)
+                    } else {
+                        (sibling, hash)
+                    };
+
+                    let mut input = [0; 64];
+                    input[..32].copy_from_slice(&left.to_byte_array());
+                    input[32..].copy_from_slice(&right.to_byte_array());
+
+                    hash = sha256d::Hash::hash(&input);
+                    index >>= 1;
+                }
+
+                assert_eq!(hash, expected_root);
+            }
         }
     }
 
