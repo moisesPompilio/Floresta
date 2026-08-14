@@ -235,6 +235,10 @@ pub mod proof_util {
         /// The leaf claims the spent UTXO was created by the genesis block (height 0); that can
         /// never happen, as the genesis coinbase is not part of the UTXO set.
         GenesisCreationHeight,
+
+        /// A leaf cannot claim creation at or after this block's height.
+        /// Same-block spends are handled via the in-block UTXO map, and later creations are impossible.
+        FutureCreationHeight,
     }
 
     impl Display for LeafErrorKind {
@@ -245,6 +249,12 @@ pub mod proof_util {
                 Self::NotPushBytes => write!(f, "Not push bytes"),
                 Self::GenesisCreationHeight => {
                     write!(f, "Leaf claims creation at the genesis block")
+                }
+                Self::FutureCreationHeight => {
+                    write!(
+                        f,
+                        "Leaf claims creation at or after the current block's height"
+                    )
                 }
             }
         }
@@ -467,6 +477,18 @@ pub mod proof_util {
                         txid,
                         vin,
                         kind: LeafErrorKind::GenesisCreationHeight,
+                    }
+                    .into());
+                }
+
+                // A leaf must reference a UTXO created in an earlier block.
+                // Same-block spends are handled by the in-block utxos map.
+                if creation_height >= height {
+                    return Err(UtreexoLeafError {
+                        leaf,
+                        txid,
+                        vin,
+                        kind: LeafErrorKind::FutureCreationHeight,
                     }
                     .into());
                 }
@@ -854,6 +876,20 @@ mod test {
         assert!(
             matches!(kind, LeafErrorKind::GenesisCreationHeight),
             "expected GenesisCreationHeight, got {kind:?}"
+        );
+    }
+
+    #[test]
+    fn test_process_proof_rejects_future_creation_height() {
+        // We're validating the block at height 100, but the leaf claims the spent UTXO was
+        // created at the same height (header_code 200 => creation_height 100), which is
+        // impossible for a prior-block UTXO.
+        let Err(kind) = process_proof_leaf(200, 100, true) else {
+            panic!("expected the future-height leaf to be rejected");
+        };
+        assert!(
+            matches!(kind, LeafErrorKind::FutureCreationHeight),
+            "expected FutureCreationHeight, got {kind:?}"
         );
     }
 }
