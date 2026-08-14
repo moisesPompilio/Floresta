@@ -590,6 +590,8 @@ mod test {
     use bitcoin::absolute::LockTime;
     use bitcoin::blockdata::script;
     use bitcoin::consensus::encode::deserialize_hex;
+    use bitcoin::hashes::Hash;
+    use bitcoin::hashes::sha256;
     use bitcoin::opcodes::all::OP_NOP;
     use bitcoin::opcodes::all::OP_PUSHBYTES_1;
     use bitcoin::transaction::Version;
@@ -646,6 +648,76 @@ mod test {
                 stringify!($err_kind),
             );
         };
+    }
+
+    /// Runs `process_proof` for a single leaf at `header_code` and `block_height`.
+    /// If `expect_reject` is true, the leaf must be rejected before any block-hash lookup;
+    /// otherwise the dummy hash is used and the generated deletion hashes are returned.
+    fn process_proof_leaf(
+        header_code: u32,
+        block_height: u32,
+        expect_reject: bool,
+    ) -> Result<Vec<sha256::Hash>, LeafErrorKind> {
+        #[derive(Debug)]
+        // Any `E: From<UtreexoLeafError>` works; a local type keeps the test self-contained.
+        enum TestErr {
+            Leaf(UtreexoLeafError),
+        }
+
+        impl From<UtreexoLeafError> for TestErr {
+            fn from(e: UtreexoLeafError) -> Self {
+                Self::Leaf(e)
+            }
+        }
+
+        let coinbase = Transaction {
+            version: Version::ONE,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn::default()],
+            output: vec![TxOut {
+                value: Amount::from_sat(50),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        };
+        // A tx spending a prior-block UTXO, so `process_proof` pulls a leaf for it.
+        let spending_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: coinbase.compute_txid(),
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(10),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        };
+        let txdata = [coinbase, spending_tx];
+
+        let leaves = [CompactLeafData {
+            header_code,
+            amount: 1,
+            spk_ty: ScriptPubKeyKind::Other(Box::new([0x51])),
+        }];
+
+        // When we expect a rejection, `get_block_hash` must not be called: the leaf should be
+        // rejected before any lookup. Otherwise, return a dummy hash so the proof is processed.
+        let get_block_hash = |_height| -> Result<BlockHash, TestErr> {
+            if expect_reject {
+                panic!("get_block_hash must not be called for a rejected leaf")
+            }
+            Ok(BlockHash::all_zeros())
+        };
+
+        match process_proof(&leaves, &txdata, block_height, get_block_hash) {
+            Ok((del_hashes, _)) => Ok(del_hashes),
+            Err(TestErr::Leaf(err)) => Err(err.kind),
+        }
     }
 
     #[test]
@@ -765,66 +837,23 @@ mod test {
     }
 
     #[test]
+    fn test_process_proof_accepts_valid_leaf() {
+        // A leaf created at height 25 (header_code 50), spent in the block at height 151, is
+        // valid: the creation height is strictly between 0 and the current block's height.
+        let del_hashes =
+            process_proof_leaf(50, 151, false).expect("a valid leaf should be accepted");
+        // One leaf was processed, so one deletion hash should have been produced.
+        assert_eq!(del_hashes.len(), 1);
+    }
+
+    #[test]
     fn test_process_proof_rejects_genesis_creation_height() {
-        #[derive(Debug)]
-        // Any `E: From<UtreexoLeafError>` works; a local type keeps the test self-contained.
-        enum TestErr {
-            Leaf(UtreexoLeafError),
-        }
-
-        impl From<UtreexoLeafError> for TestErr {
-            fn from(e: UtreexoLeafError) -> Self {
-                Self::Leaf(e)
-            }
-        }
-
-        let coinbase = Transaction {
-            version: Version::ONE,
-            lock_time: LockTime::ZERO,
-            input: vec![TxIn::default()],
-            output: vec![TxOut {
-                value: Amount::from_sat(50),
-                script_pubkey: ScriptBuf::new(),
-            }],
+        let Err(kind) = process_proof_leaf(0, 100, true) else {
+            panic!("expected the genesis-height leaf to be rejected");
         };
-        // A tx spending a prior-block UTXO, so `process_proof` pulls a leaf for it.
-        let spending_tx = Transaction {
-            version: Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: vec![TxIn {
-                previous_output: OutPoint {
-                    txid: coinbase.compute_txid(),
-                    vout: 0,
-                },
-                script_sig: ScriptBuf::new(),
-                sequence: Sequence::MAX,
-                witness: Witness::new(),
-            }],
-            output: vec![TxOut {
-                value: Amount::from_sat(10),
-                script_pubkey: ScriptBuf::new(),
-            }],
-        };
-        let txdata = [coinbase, spending_tx];
-
-        let leaves = [CompactLeafData {
-            header_code: 0,
-            amount: 1,
-            spk_ty: ScriptPubKeyKind::Other(Box::new([0x51])),
-        }];
-
-        // The leaf must be rejected before any block-hash lookup happens.
-        let get_block_hash = |_height| -> Result<BlockHash, TestErr> {
-            panic!("get_block_hash must not be called for a rejected genesis leaf")
-        };
-
-        let TestErr::Leaf(err) =
-            process_proof(&leaves, &txdata, 100, get_block_hash).expect_err("must be rejected");
-
         assert!(
-            matches!(err.kind, LeafErrorKind::GenesisCreationHeight),
-            "expected GenesisCreationHeight, got {:?}",
-            err.kind
+            matches!(kind, LeafErrorKind::GenesisCreationHeight),
+            "expected GenesisCreationHeight, got {kind:?}"
         );
     }
 }
