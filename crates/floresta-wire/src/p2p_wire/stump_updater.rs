@@ -221,6 +221,10 @@ impl StumpUpdater {
 mod tests {
     use std::time::Duration;
 
+    use bitcoin::Block;
+    use bitcoin::consensus::encode::deserialize_hex;
+    use floresta_chain::proof_util;
+    use floresta_common::acchashes;
     use floresta_common::assert_err;
     use tokio::time::timeout;
 
@@ -334,4 +338,69 @@ mod tests {
     fn spawn_panics_if_initial_height_is_above_stop_height() {
         let _ = StumpUpdater::spawn(Stump::new(), 6, 5);
     }
+
+    /// Builds a mainnet stump from additions delivered in reverse height order.
+    async fn run_mainnet_additions(stop_height: u32, empty_add_height: Option<u32>) -> Stump {
+        let blocks: Vec<Block> =
+            include_str!("../../../floresta-chain/testdata/mainnet_blocks.txt")
+                .lines()
+                .take(stop_height as usize + 1)
+                .map(|block| deserialize_hex(block).unwrap())
+                .collect();
+
+        let StumpUpdaterHandle { tx, done } = StumpUpdater::spawn(Stump::new(), 0, stop_height);
+
+        // Send every update in reverse order
+        for height in (1..=stop_height).rev() {
+            let block = &blocks[height as usize];
+            let mut adds = proof_util::get_block_adds(block, height, block.block_hash());
+
+            if empty_add_height == Some(height) {
+                assert_eq!(adds.len(), 1, "this test assumes a single spent TXO");
+                adds[0] = BitcoinNodeHash::Empty;
+            }
+
+            tx.send((height, SparseUtreexoAdds::new(adds))).unwrap();
+        }
+
+        timeout(Duration::from_secs(5), done)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn mainnet_additions_only_out_of_order() {
+        // Height 170 contains the first spend, so stop at 169
+        let actual = run_mainnet_additions(169, None).await;
+
+        let expected = Stump {
+            leaves: 169,
+            roots: acchashes![
+                "69482b799cf46ed514b01ce0573730a89c537018636b8c52a8864d5968b917f3",
+                "53c92fa0792c9af1c19793b1149e7fe209c69b320ea054338f53f8fd8535f2e8",
+                "6096c8421c1f86a9caa26e972dccdb964e280164fb060a576d51f5844e259569",
+                "fd46029ebb0c19e2d468a9b24d20519c64ccc342e6a32b95c86a57489b6d2504",
+            ]
+            .to_vec(),
+        };
+
+        assert_eq!(actual, expected);
+    }
+
+    // TODO: uncomment when rustreexo supports implicit deletion
+    /*
+    #[tokio::test]
+    async fn mainnet_additions_with_implicit_deletion_out_of_order() {
+        // Block 9's sole addition is spent at height 170
+        let actual = run_mainnet_additions(175, Some(9)).await;
+
+        let expected = Stump {
+            leaves: 177,
+            roots: acchashes![], // TODO: expected roots at height 175
+        };
+
+        assert_eq!(actual, expected);
+    }
+    */
 }
