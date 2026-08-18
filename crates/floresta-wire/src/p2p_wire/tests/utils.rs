@@ -366,7 +366,8 @@ where
 
     for (i, peer_data) in args.peers.into_iter().enumerate() {
         let peer_id = i as u32;
-        let peer = spawn_peer(peer_data, node.node_tx.clone(), peer_id);
+        let mut peer = spawn_peer(peer_data, node.node_tx.clone(), peer_id);
+        peer.message_times.add(1.0);
 
         // Add a fixed peer to avoid opening real P2P connections
         if i == 0 {
@@ -374,6 +375,7 @@ where
         }
 
         node.peers.insert(peer_id, peer);
+
         // Populate the peer services too
         for service in [
             service_flags::UTREEXO.into(),
