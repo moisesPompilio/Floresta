@@ -63,12 +63,19 @@ impl<Blockchain: RpcChain> RpcImpl<Blockchain> {
         let address =
             BitcoinSocketAddr::parse_address(&address, Some(self.network), SystemResolver)?;
 
-        let _ = match command.as_str() {
-            "add" => self.node.add_peer(address, v2transport).await,
-            "remove" => self.node.remove_peer(address).await,
-            "onetry" => self.node.onetry_peer(address, v2transport).await,
+        let succeeded = match command.as_str() {
+            "add" => self.node.add_peer(address.clone(), v2transport).await,
+            "remove" => self.node.remove_peer(address.clone()).await,
+            "onetry" => self.node.onetry_peer(address.clone(), v2transport).await,
             _ => return Err(JsonRpcError::InvalidAddnodeCommand),
-        };
+        }
+        .map_err(|e| JsonRpcError::Node(e.to_string()))?;
+
+        if !succeeded {
+            return Err(JsonRpcError::Node(format!(
+                "Failed to {command} peer {address}"
+            )));
+        }
 
         Ok(json!(null))
     }
