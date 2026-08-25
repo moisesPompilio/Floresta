@@ -327,11 +327,7 @@ impl LocalAddress {
                 let octets = address.octets();
                 // CJDNS addresses use a special range for local addresses (FC00::/8)
                 // See: https://github.com/cjdelisle/cjdns/tree/master/doc#what-is-notable-about-cjdns-why-should-i-use-it
-                if octets[0] == 0xFC {
-                    return true;
-                }
-
-                false
+                octets[0] == 0xFC
             }
             _ => true,
         }
