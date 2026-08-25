@@ -489,7 +489,7 @@ pub mod jsonrpc_interface {
 
     impl From<Infallible> for JsonRpcError {
         fn from(e: Infallible) -> Self {
-            Self::ConversionOverflow(e.to_string())
+            match e {}
         }
     }
 
