@@ -14,7 +14,6 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
-use core::ffi::c_uint;
 
 use bitcoin::Block;
 use bitcoin::BlockHash;
@@ -23,6 +22,8 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::constants::SUBSIDY_HALVING_INTERVAL;
 use bitcoin::p2p::ServiceFlags;
 use bitcoin::params::Params;
+#[cfg(feature = "bitcoinkernel")]
+use bitcoinkernel::ScriptVerificationFlags;
 use floresta_common::acchashes;
 use floresta_common::bhash;
 use floresta_common::service_flags;
@@ -76,7 +77,7 @@ pub struct ChainParams {
 
     /// A list of exceptions to the rules, where the key is the block hash and the value is the
     /// verification flags
-    pub exceptions: HashMap<BlockHash, c_uint>,
+    pub exceptions: HashMap<BlockHash, u32>,
 
     /// The network this chain params is for
     pub network: Network,
@@ -245,7 +246,7 @@ impl ChainParams {
 
     #[cfg(feature = "bitcoinkernel")]
     /// Returns the validation flags for a given block hash and height
-    pub fn get_validation_flags(&self, height: u32, hash: BlockHash) -> c_uint {
+    pub fn get_validation_flags(&self, height: u32, hash: BlockHash) -> ScriptVerificationFlags {
         if let Some(flag) = self.exceptions.get(&hash) {
             return *flag;
         }
@@ -285,7 +286,7 @@ impl ChainParams {
 /// "looks like segwit but are not segwit". We pretend segwit
 /// was enabled since genesis, and only skip this for blocks
 /// that have such transactions using hardcoded values.
-fn get_exceptions() -> HashMap<BlockHash, c_uint> {
+fn get_exceptions() -> HashMap<BlockHash, ScriptVerificationFlags> {
     use bitcoinkernel::VERIFY_NONE;
     use bitcoinkernel::VERIFY_P2SH;
     use bitcoinkernel::VERIFY_WITNESS;
@@ -307,7 +308,7 @@ fn get_exceptions() -> HashMap<BlockHash, c_uint> {
 }
 
 #[cfg(not(feature = "bitcoinkernel"))]
-fn get_exceptions() -> HashMap<BlockHash, c_uint> {
+fn get_exceptions() -> HashMap<BlockHash, u32> {
     HashMap::new()
 }
 

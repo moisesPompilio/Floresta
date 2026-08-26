@@ -7,8 +7,6 @@
 
 extern crate alloc;
 
-use core::ffi::c_uint;
-
 use bitcoin::Amount;
 use bitcoin::Block;
 use bitcoin::CompactTarget;
@@ -29,6 +27,8 @@ use bitcoin::hashes::sha256;
 use bitcoin::script;
 #[cfg(feature = "bitcoinkernel")]
 use bitcoinkernel::PrecomputedTransactionData;
+#[cfg(feature = "bitcoinkernel")]
+use bitcoinkernel::ScriptVerificationFlags;
 use floresta_common::prelude::*;
 use rustreexo::node_hash::BitcoinNodeHash;
 use rustreexo::proof::Proof;
@@ -191,7 +191,7 @@ impl Consensus {
         transactions: &[Transaction],
         subsidy: Amount,
         verify_script: bool,
-        flags: c_uint,
+        flags: u32,
     ) -> Result<(), BlockchainError> {
         // Blocks must contain at least one transaction (i.e., the coinbase)
         if transactions.is_empty() {
@@ -383,7 +383,7 @@ impl Consensus {
         utxos: &mut HashMap<OutPoint, UtxoData>,
         height: u32,
         _verify_script: bool,
-        _flags: c_uint,
+        _flags: u32,
     ) -> Result<(Amount, Amount), BlockchainError> {
         let txid = || transaction.compute_txid();
 
@@ -437,7 +437,7 @@ impl Consensus {
     fn verify_input_scripts(
         transaction: &Transaction,
         spent_utxos: &[UtxoData],
-        flags: c_uint,
+        flags: ScriptVerificationFlags,
     ) -> Result<(), BlockchainError> {
         let tx = serialize(&transaction);
         let txid = || transaction.compute_txid();
