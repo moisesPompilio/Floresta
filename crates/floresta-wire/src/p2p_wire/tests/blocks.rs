@@ -14,22 +14,24 @@ mod tests {
     use tokio::sync::oneshot::Receiver;
 
     use crate::node::InflightRequests;
+    use crate::node::PeerStatus;
     use crate::node::UtreexoNode;
     use crate::node::sync_ctx::SyncNode;
     use crate::node_handle::NodeResponse;
     use crate::node_handle::UserRequest;
+    use crate::p2p_wire::error::WireError;
+    use crate::p2p_wire::tests::utils::Mutation;
+    use crate::p2p_wire::tests::utils::PEER_TEST;
     use crate::p2p_wire::tests::utils::PeerData;
     use crate::p2p_wire::tests::utils::build_node;
+    use crate::p2p_wire::tests::utils::setup_unit_node;
     use crate::p2p_wire::tests::utils::signet_blocks;
     use crate::p2p_wire::tests::utils::signet_headers;
+    use crate::p2p_wire::tests::utils::synthetic_block;
 
-    const PEER_TEST: u32 = 0;
+    type TestNode = UtreexoNode<Arc<ChainState<FlatChainStore>>, SyncNode>;
 
-    type TestSetup = (
-        UtreexoNode<Arc<ChainState<FlatChainStore>>, SyncNode>,
-        Block,
-        Option<Receiver<NodeResponse>>,
-    );
+    type TestSetup = (TestNode, Block, Option<Receiver<NodeResponse>>);
 
     fn setup_test(is_user_request: bool) -> TestSetup {
         let datadir = format!("./tmp-db/{}.blocks", rand::random::<u32>());
@@ -68,6 +70,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_check_mutated_block_unmutated_block_is_ok() {
+        let mut node: TestNode = setup_unit_node();
+        let block = synthetic_block(Mutation::None);
+
+        node.check_mutated_block(&block, PEER_TEST).unwrap();
+
+        // The peer shouldn't be punished
+        assert_eq!(node.peers.get(&PEER_TEST).unwrap().state, PeerStatus::Ready);
+    }
+
+    #[tokio::test]
+    async fn test_check_mutated_block_mutated_block_bans_peer() {
+        let mut node: TestNode = setup_unit_node();
+        let block = synthetic_block(Mutation::MerkleRoot);
+        assert!(!block.check_merkle_root());
+
+        let result = node.check_mutated_block(&block, PEER_TEST).unwrap_err();
+
+        assert!(matches!(result, WireError::PeerMisbehaving));
+        assert_eq!(
+            node.peers.get(&PEER_TEST).unwrap().state,
+            PeerStatus::Banned
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_mutated_block_bad_witness_commitment_bans_peer() {
+        let mut node: TestNode = setup_unit_node();
+        let block = synthetic_block(Mutation::WitnessCommitment);
+
+        // The merkle root matches, so only the witness commitment is invalid
+        assert!(block.check_merkle_root());
+        assert!(!block.check_witness_commitment());
+
+        let result = node.check_mutated_block(&block, PEER_TEST).unwrap_err();
+
+        assert!(matches!(result, WireError::PeerMisbehaving));
+        assert_eq!(
+            node.peers.get(&PEER_TEST).unwrap().state,
+            PeerStatus::Banned
+        );
+    }
+
+    #[tokio::test]
     async fn test_block_proof_valid_block_stores_and_requests_proof() {
         let (mut node, block, _) = setup_test(false);
         let block_hash = block.block_hash();
@@ -83,14 +129,14 @@ mod tests {
                 .contains_key(&InflightRequests::Blocks(block_hash))
         );
 
-            // Coinbase-only: no proof needed, aux_data is ready
-            let inflight_block = node.blocks.get(&block_hash).unwrap();
-            assert!(inflight_block.aux_data.is_some());
-            assert!(
-                !node
-                    .inflight
-                    .contains_key(&InflightRequests::UtreexoProof(block_hash))
-            );
+        // Coinbase-only: no proof needed, aux_data is ready
+        let inflight_block = node.blocks.get(&block_hash).unwrap();
+        assert!(inflight_block.aux_data.is_some());
+        assert!(
+            !node
+                .inflight
+                .contains_key(&InflightRequests::UtreexoProof(block_hash))
+        );
     }
 
     #[tokio::test]

@@ -11,6 +11,7 @@ use floresta_chain::ChainBackend;
 use floresta_chain::CompactLeafData;
 use floresta_chain::proof_util;
 use floresta_chain::proof_util::UtreexoLeafError;
+use floresta_chain::pruned_utreexo::consensus::Consensus;
 use floresta_common::service_flags;
 use floresta_common::try_and_log;
 use rustreexo::proof::Proof;
@@ -104,6 +105,23 @@ where
         for block in blocks.iter() {
             self.inflight
                 .insert(InflightRequests::Blocks(*block), (peer, Instant::now()));
+        }
+
+        Ok(())
+    }
+
+    /// Checks whether the peer that sent us this block mutated it, i.e. whether its  transactions
+    /// don't match the merkle root or the witness commitment in the header. The original block may
+    /// be valid, so we don't invalidate it, we just ban the peer and return an error.
+    pub(crate) fn check_mutated_block(
+        &mut self,
+        block: &Block,
+        peer: PeerId,
+    ) -> Result<(), WireError> {
+        if Consensus::check_merkle_root(block).is_none() || !block.check_witness_commitment() {
+            error!("Peer {peer} sent us a mutated block {}", block.block_hash());
+            self.disconnect_and_ban(peer)?;
+            return Err(WireError::PeerMisbehaving);
         }
 
         Ok(())

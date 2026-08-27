@@ -6,15 +6,29 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use bitcoin::Amount;
 use bitcoin::Block;
 use bitcoin::BlockHash;
+use bitcoin::CompactTarget;
 use bitcoin::Network;
+use bitcoin::OutPoint;
+use bitcoin::ScriptBuf;
+use bitcoin::Sequence;
+use bitcoin::TxMerkleNode;
+use bitcoin::TxOut;
+use bitcoin::Witness;
+use bitcoin::absolute::LockTime;
 use bitcoin::block::Header;
+use bitcoin::block::Version as BlockVersion;
 use bitcoin::consensus::Decodable;
 use bitcoin::consensus::encode;
 use bitcoin::consensus::encode::deserialize_hex;
+use bitcoin::hashes::Hash;
 use bitcoin::hex::FromHex;
 use bitcoin::p2p::ServiceFlags;
+use bitcoin::transaction::Transaction;
+use bitcoin::transaction::TxIn;
+use bitcoin::transaction::Version as TransactionVersion;
 use derive_more::Constructor;
 use floresta_chain::AssumeValidArg;
 use floresta_chain::ChainState;
@@ -48,10 +62,13 @@ use crate::node::NodeRequest;
 use crate::node::PeerStatus;
 use crate::node::UtreexoNode;
 use crate::node::sync_ctx::SyncNode;
+use crate::node_context::NodeContext;
 use crate::p2p_wire::block_proof::UtreexoProof;
 use crate::p2p_wire::peer::PeerMessages;
 use crate::p2p_wire::peer::Version;
 use crate::p2p_wire::transport::TransportProtocol;
+
+pub const PEER_TEST: u32 = 0;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct UtreexoRoots {
@@ -289,6 +306,58 @@ pub fn mutated_block_h7() -> Block {
     ).unwrap()
 }
 
+/// How [`synthetic_block`] deviates from a non-mutated block.
+pub enum Mutation {
+    None,
+    /// The header commits to a merkle root that doesn't match the transaction list.
+    MerkleRoot,
+    /// The coinbase uses witness, making a witness commitment required, but has none.
+    WitnessCommitment,
+}
+
+/// Builds a coinbase-only block that isn't a valid block, but passes the
+/// mutated-block checks: with a single transaction the merkle root is its txid, and
+/// since no transaction uses witness, the witness commitment is optional.
+pub fn synthetic_block(mutation: Mutation) -> Block {
+    let mut coinbase = Transaction {
+        version: TransactionVersion::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: OutPoint::null(),
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::default(),
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(50),
+            script_pubkey: ScriptBuf::new(),
+        }],
+    };
+
+    if let Mutation::WitnessCommitment = mutation {
+        coinbase.input[0].witness.push([0u8; 32]);
+    }
+
+    let merkle_root = match mutation {
+        // Any hash that isn't the coinbase txid
+        Mutation::MerkleRoot => TxMerkleNode::from_byte_array([0x42; 32]),
+        // The txid doesn't commit to the witness, so it's still the merkle root
+        _ => TxMerkleNode::from_byte_array(coinbase.compute_txid().to_byte_array()),
+    };
+
+    Block {
+        header: Header {
+            version: BlockVersion::TWO,
+            prev_blockhash: BlockHash::from_byte_array([0; 32]),
+            merkle_root,
+            time: 0,
+            bits: CompactTarget::from_consensus(0x207f_ffff),
+            nonce: 0,
+        },
+        txdata: vec![coinbase],
+    }
+}
+
 // Nightly Clippy false positive in `Constructor`-generated code:
 // https://github.com/rust-lang/rust-clippy/issues/17525
 #[allow(clippy::redundant_field_names)]
@@ -300,18 +369,21 @@ pub struct PeerData {
     accs: HashMap<BlockHash, Vec<u8>>,
 }
 
-type BuildNode = (
-    UtreexoNode<Arc<ChainState<FlatChainStore>>, SyncNode>,
+type BuildNode<T> = (
+    UtreexoNode<Arc<ChainState<FlatChainStore>>, T>,
     Arc<ChainState<FlatChainStore>>,
 );
 
-pub fn build_node(
+pub fn build_node<T>(
     peers: Vec<PeerData>,
     pow_fraud_proofs: bool,
     network: Network,
     datadir: impl AsRef<Path>,
     num_blocks: usize,
-) -> BuildNode {
+) -> BuildNode<T>
+where
+    T: 'static + Default + NodeContext,
+{
     let config = FlatChainStoreConfig::new(&datadir);
 
     let chainstore = FlatChainStore::new(config).unwrap();
@@ -328,7 +400,7 @@ pub fn build_node(
 
     let config = get_node_config(&datadir, network, pow_fraud_proofs);
     let kill_signal = Arc::new(RwLock::new(false));
-    let mut node = UtreexoNode::<Arc<ChainState<FlatChainStore>>, SyncNode>::new(
+    let mut node = UtreexoNode::<Arc<ChainState<FlatChainStore>>, T>::new(
         config,
         chain.clone(),
         mempool,
@@ -394,6 +466,23 @@ pub fn build_node(
     (node, chain)
 }
 
+/// Creates an isolated testing node with two simulated peers on Signet
+pub fn setup_unit_node<T>() -> UtreexoNode<Arc<ChainState<FlatChainStore>>, T>
+where
+    T: 'static + Default + NodeContext,
+{
+    let datadir = format!("./tmp-db/{}.unit_node", rand::random::<u32>());
+    let blocks = signet_blocks();
+    let headers = signet_headers();
+
+    let peers = vec![
+        PeerData::new(Vec::new(), blocks.clone(), HashMap::new()),
+        PeerData::new(headers, blocks, HashMap::new()),
+    ];
+    let (node, _chain) = build_node::<T>(peers, false, Network::Signet, &datadir, 9);
+    node
+}
+
 pub async fn setup_node(
     peers: Vec<PeerData>,
     pow_fraud_proofs: bool,
@@ -401,7 +490,8 @@ pub async fn setup_node(
     datadir: impl AsRef<Path>,
     num_blocks: usize,
 ) -> Arc<ChainState<FlatChainStore>> {
-    let (node, chain) = build_node(peers, pow_fraud_proofs, network, datadir, num_blocks);
+    let (node, chain) =
+        build_node::<SyncNode>(peers, pow_fraud_proofs, network, datadir, num_blocks);
     timeout(Duration::from_secs(100), node.run(|_| {}))
         .await
         .unwrap();
