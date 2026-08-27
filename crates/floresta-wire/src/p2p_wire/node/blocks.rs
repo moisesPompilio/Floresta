@@ -26,6 +26,7 @@ use crate::block_proof::Bitmap;
 use crate::block_proof::UtreexoProof;
 use crate::node_context::NodeContext;
 use crate::node_context::PeerId;
+use crate::node_handle::UserRequest;
 use crate::p2p_wire::error::WireError;
 
 /// The leaf data, utreexo proof and the peer that sent them.
@@ -127,6 +128,42 @@ where
         Ok(())
     }
 
+    /// Checks whether this block was mutated with [`Self::check_mutated_block`], banning the
+    /// peer if so. Returns `true` if the block was mutated and shouldn't be processed any
+    /// further: if it was a user request, we retry it with another peer, keeping the request
+    /// open, otherwise we return a WireError.
+    pub(crate) fn check_mutated_block_and_retry_user_request(
+        &mut self,
+        block: &Block,
+        peer: PeerId,
+    ) -> Result<bool, WireError> {
+        let Err(e) = self.check_mutated_block(block, peer) else {
+            return Ok(false);
+        };
+
+        let block_hash = block.block_hash();
+
+        let is_user_request = self
+            .inflight_user_requests
+            .contains_key(&UserRequest::Block(block_hash));
+
+        if is_user_request {
+            // Retry the block elsewhere; the user request stays open
+            // and the inflight entry re-arms the timeout machinery.
+            let new_peer = self.send_to_fast_peer(
+                NodeRequest::GetBlock(vec![block_hash]),
+                ServiceFlags::NETWORK,
+            )?;
+            self.inflight.insert(
+                InflightRequests::Blocks(block_hash),
+                (new_peer, Instant::now()),
+            );
+            return Ok(true);
+        }
+
+        Err(e)
+    }
+
     pub(crate) fn request_block_proof(
         &mut self,
         block: Block,
@@ -134,6 +171,12 @@ where
     ) -> Result<(), WireError> {
         let block_hash = block.block_hash();
         self.inflight.remove(&InflightRequests::Blocks(block_hash));
+
+        // Check whether the block is mutated and whether there is an outstanding user request
+        // before proceeding.
+        if self.check_mutated_block_and_retry_user_request(&block, peer)? {
+            return Ok(());
+        }
 
         // Reply and return early if it's a user-requested block. Else continue handling it.
         let Some(block) = self.check_is_user_block_and_reply(block)? else {
