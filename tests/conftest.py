@@ -26,6 +26,29 @@ from test_framework.node import Node, NodeType
 from test_framework.util import Utility
 
 
+def pytest_addoption(parser):
+    """Register custom pytest command-line options used by this test suite."""
+    parser.addoption(
+        "--run-expensive",
+        action="store_true",
+        default=False,
+        help="Run tests marked with the expensive marker",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip expensive-marked tests unless the dedicated opt-in flag is enabled."""
+    if config.getoption("--run-expensive"):
+        return
+
+    skip_expensive = pytest.mark.skip(
+        reason="need --run-expensive to run expensive tests"
+    )
+    for item in items:
+        if "expensive" in item.keywords:
+            item.add_marker(skip_expensive)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def validate_and_check_environment():
     """Validate environment and check for required binaries before running tests."""
