@@ -84,7 +84,6 @@ fn parse_and_split_descriptor(
     descriptor: &str,
 ) -> Result<Vec<Descriptor<DescriptorPublicKey>>, DescriptorError> {
     let descriptor = Descriptor::<DescriptorPublicKey>::from_str(descriptor)?;
-    descriptor.sanity_check()?;
 
     let descriptors = descriptor.into_single_descriptors()?;
 
