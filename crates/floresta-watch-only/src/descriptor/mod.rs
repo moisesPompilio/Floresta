@@ -256,6 +256,21 @@ mod test {
         &TEST_CASE_VPUB_REGTEST,
     ];
 
+    fn get_invalid_descriptor() -> [String; 4] {
+        [
+            "abc".to_string(),
+            "".to_string(),
+            format!(
+                "and_v(v:pk({}/0/*),or_i(after(100),older(200)))",
+                TEST_CASE_XPUB.xpub
+            ),
+            format!(
+                "or_b(pk({}/0/*),s:or_b(pk({}/0/*),s:after(100)))",
+                TEST_CASE_XPUB.xpub, TEST_CASE_XPUB.xpub
+            ),
+        ]
+    }
+
     #[test]
     fn test_parse_xpub_valid_cases() {
         let cases = TEST_CASES;
@@ -294,6 +309,16 @@ mod test {
     }
 
     #[test]
+    fn test_parse_xpub_invalid_keys() {
+        for key in get_invalid_descriptor() {
+            assert!(matches!(
+                parse_xpub(&key, Network::Bitcoin).unwrap_err(),
+                DescriptorError::XpubParseError(_)
+            ));
+        }
+    }
+
+    #[test]
     fn test_parse_xpub_with_correct_network() {
         fn check(xpub: &str, network: Network) {
             let parsed = parse_xpub(xpub, network);
@@ -318,7 +343,7 @@ mod test {
 
             for net in wrong_network {
                 let parsed = parse_xpub(xpub, net);
-                let err = parsed.err().unwrap();
+                let err = parsed.unwrap_err();
                 assert!(
                     matches!(err, DescriptorError::XpubNetworkMismatch(actual) if actual == xpub),
                     "Expected XpubNetworkMismatch error"
@@ -343,6 +368,14 @@ mod test {
                 .collect::<Vec<_>>();
 
             assert_eq!(descriptors, expected_descriptor);
+        }
+    }
+
+    #[test]
+    fn test_parse_and_split_descriptor_invalid_descriptor() {
+        for desc in get_invalid_descriptor() {
+            let err = parse_and_split_descriptor(&desc).unwrap_err();
+            assert!(matches!(err, DescriptorError::MiniscriptError(_)));
         }
     }
 
@@ -373,6 +406,14 @@ mod test {
     }
 
     #[test]
+    fn test_derive_addresses_from_list_descriptors_invalid_descriptor() {
+        let error =
+            derive_addresses_from_list_descriptors(&get_invalid_descriptor(), 1, 1).unwrap_err();
+
+        assert!(matches!(error, DescriptorError::MiniscriptError(_)));
+    }
+
+    #[test]
     fn test_derive_addresses_from_descriptor_valid_cases() {
         let cases = TEST_CASES;
         for &tc in &cases {
@@ -391,6 +432,15 @@ mod test {
                 derive_addresses_from_descriptor(tc.change_descriptor, 0, 1).unwrap();
             assert_eq!(change_script_buff.len(), 1);
             assert_eq!(change_script_buff[0].to_string(), tc.change_script);
+        }
+    }
+
+    #[test]
+    fn test_derive_addresses_from_descriptor_invalid_descriptor() {
+        for desc in get_invalid_descriptor() {
+            let error = derive_addresses_from_descriptor(&desc, 1, 1).unwrap_err();
+
+            assert!(matches!(error, DescriptorError::MiniscriptError(_)));
         }
     }
 
@@ -439,4 +489,16 @@ mod test {
             derive_addresses_from_list_descriptors(&[invalid_descriptor.to_string()], 0, 1);
         check(result);
     }
+
+    // TODO: Uncomment this test once miniscript is updated to a version > 13.1.0
+    // There is a crash issue in Miniscript that has already been fixed in the library, but a
+    // release containing the fix is not available yet.
+    // See https://github.com/rust-bitcoin/rust-miniscript/pull/913 for more details.
+    //
+    // #[test]
+    // fn test_derive_addresses_hardened_path_after_xpub() {
+    //     let hardened = format!("pkh({}/1h/*)", TEST_CASE_XPUB.xpub);
+    //     let error = derive_addresses_from_descriptor(&hardened, 0, 1).unwrap_err();
+    //     assert!(matches!(error, DescriptorError::MiniscriptError(_)));
+    // }
 }
