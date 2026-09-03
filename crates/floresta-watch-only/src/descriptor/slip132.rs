@@ -269,19 +269,104 @@ mod test {
         base58::encode_check(&data)
     }
 
-    #[test]
-    fn test_check_unknown_slip32_prefix_error() {
-        let cases = [
+    /// Keys whose 4-byte prefix isn't one of the SLIP-132 ones we support
+    fn get_unknown_prefix_keys() -> [String; 6] {
+        [
             create_invalid_slip32_base58(XPUB),
             create_invalid_slip32_base58(YPUB),
             create_invalid_slip32_base58(ZPUB),
             create_invalid_slip32_base58(TPUB),
             create_invalid_slip32_base58(UPUB),
             create_invalid_slip32_base58(VPUB),
-        ];
+        ]
+    }
 
-        for key in cases.iter() {
-            let result = extract_slip132_prefix(key);
+    #[test]
+    fn test_invalid_base58_checksum() {
+        let corrupted: String = format!("y{}", &XPUB[1..]);
+
+        let error = extract_slip132_prefix(&corrupted).unwrap_err();
+        assert!(matches!(error, Error::Base58(_)));
+
+        let error = generate_descriptor_from_xpub(&corrupted, false).unwrap_err();
+        assert!(matches!(error, Error::Base58(_)));
+    }
+
+    #[test]
+    fn test_from_slip132_str_bip32_error() {
+        let mut data = base58::decode_check(XPUB).unwrap();
+        data.truncate(40);
+        let truncated = base58::encode_check(&data);
+
+        let error = Xpub::from_slip132_str(&truncated).unwrap_err();
+        assert!(matches!(error, Error::Bip32(_)));
+
+        let error = generate_descriptor_from_xpub(&truncated, false).unwrap_err();
+        assert!(matches!(error, Error::Bip32(_)));
+    }
+
+    #[test]
+    fn test_from_slip132_str_unknown_slip32_prefix_error() {
+        for key in get_unknown_prefix_keys() {
+            let error = Xpub::from_slip132_str(&key).unwrap_err();
+
+            assert_eq!(error, Error::UnknownSlip32Prefix);
+        }
+    }
+
+    #[test]
+    fn test_generate_descriptor_from_xpub_unknown_slip32_prefix_error() {
+        for key in get_unknown_prefix_keys() {
+            let error = generate_descriptor_from_xpub(&key, false).unwrap_err();
+
+            assert_eq!(error, Error::UnknownSlip32Prefix);
+        }
+    }
+
+    #[test]
+    fn test_is_xpub_mainnet_unknown_slip32_prefix_error() {
+        for key in get_unknown_prefix_keys() {
+            let error = is_xpub_mainnet(&key).unwrap_err();
+
+            assert_eq!(error, Error::UnknownSlip32Prefix);
+        }
+    }
+
+    #[test]
+    fn test_is_xpub_mainnet_xpriv_unsupported_error() {
+        let error = is_xpub_mainnet(XPRIV).unwrap_err();
+
+        assert_eq!(error, Error::XprivUnsupported);
+    }
+
+    #[test]
+    fn test_is_xpub_mainnet_xpub_multisig_unsupported_error() {
+        let error = is_xpub_mainnet(YPUB_MULTISIG).unwrap_err();
+
+        assert_eq!(error, Error::XpubMultisigUnsupported);
+    }
+
+    #[test]
+    fn test_helpers_with_invalid_private_and_multisig_keys() {
+        assert_eq!(is_xpub_mainnet(XPRIV).unwrap_err(), Error::XprivUnsupported);
+        assert_eq!(
+            is_xpub_mainnet(YPUB_MULTISIG).unwrap_err(),
+            Error::XpubMultisigUnsupported
+        );
+        assert_eq!(
+            generate_descriptor_from_xpub(XPRIV, false).unwrap_err(),
+            Error::XprivUnsupported
+        );
+        assert_eq!(
+            generate_descriptor_from_xpub(YPUB_MULTISIG, false).unwrap_err(),
+            Error::XpubMultisigUnsupported
+        );
+    }
+
+    #[test]
+    fn test_check_unknown_slip32_prefix_error() {
+        for key in get_unknown_prefix_keys() {
+            let result = extract_slip132_prefix(&key);
             assert_eq!(result.err().unwrap(), Error::UnknownSlip32Prefix);
         }
     }
