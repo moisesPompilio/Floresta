@@ -2,7 +2,12 @@
 
 //! Every [`AddressCacheDatabase`] implementation is held to the same rules: each
 //! test below exercises one trait method at a time, against whichever database
-//! [`setup_test`] instantiates.
+//! [`setup_test`] instantiates. With the `memory-database` feature enabled we
+//! test the [`MemoryDatabase`], otherwise a [`KvDatabase`] on a temporary
+//! datadir. The CI feature matrix (`contrib/feature_matrix.sh`) runs both
+//! configurations, so both backends get the full suite. What's specific to the
+//! [`KvDatabase`] — that it persists to disk — lives in the [`kv_database`]
+//! submodule.
 
 mod kv_database;
 
@@ -18,17 +23,39 @@ use floresta_watch_only::AddressCacheDatabase;
 use floresta_watch_only::CachedAddress;
 use floresta_watch_only::CachedTransaction;
 use floresta_watch_only::Stats;
+#[cfg(not(feature = "memory-database"))]
 use floresta_watch_only::kv_database::KvDatabase;
+#[cfg(not(feature = "memory-database"))]
 use floresta_watch_only::kv_database::KvDatabaseError;
+#[cfg(feature = "memory-database")]
+use floresta_watch_only::memory_database::MemoryDatabase;
+#[cfg(feature = "memory-database")]
+use floresta_watch_only::memory_database::MemoryDatabaseError;
 use floresta_watch_only::merkle::MerkleProof;
 
+/// The database under test. With the `memory-database` feature enabled, we
+/// test the [`MemoryDatabase`]; otherwise we instantiate a [`KvDatabase`].
+#[cfg(feature = "memory-database")]
+type TestDatabase = Box<dyn AddressCacheDatabase<Error = MemoryDatabaseError>>;
+#[cfg(not(feature = "memory-database"))]
 type TestDatabase = Box<dyn AddressCacheDatabase<Error = KvDatabaseError>>;
 
 /// Sets up a database instance to test against, as selected by the features.
 fn setup_test() -> TestDatabase {
-    let database = KvDatabase::new(get_test_datadir()).expect("Could not create the test database");
+    #[cfg(feature = "memory-database")]
+    {
+        let database = MemoryDatabase::new();
 
-    Box::new(database)
+        Box::new(database)
+    }
+
+    #[cfg(not(feature = "memory-database"))]
+    {
+        let database =
+            KvDatabase::new(get_test_datadir()).expect("Could not create the test database");
+
+        Box::new(database)
+    }
 }
 
 /// A unique datadir under cargo's target tmpdir, so tests don't litter the repo
@@ -142,14 +169,30 @@ fn test_fresh_database_is_empty() {
     assert!(database.get_descriptors().unwrap().is_empty());
     assert!(database.list_transactions().unwrap().is_empty());
 
-    assert!(matches!(
-        database.get_stats(),
-        Err(KvDatabaseError::WalletNotInitialized)
-    ));
-    assert!(matches!(
-        database.get_cache_height(),
-        Err(KvDatabaseError::WalletNotInitialized)
-    ));
+    #[cfg(feature = "memory-database")]
+    {
+        let stats = database.get_stats().unwrap();
+        assert_eq!(stats.address_count, 0);
+        assert_eq!(stats.transaction_count, 0);
+        assert_eq!(stats.utxo_count, 0);
+        assert_eq!(stats.cache_height, 0);
+        assert_eq!(stats.txo_count, 0);
+        assert_eq!(stats.balance, 0);
+        assert_eq!(stats.derivation_index, 0);
+        assert_eq!(database.get_cache_height().unwrap(), 0);
+    }
+
+    #[cfg(not(feature = "memory-database"))]
+    {
+        assert!(matches!(
+            database.get_stats(),
+            Err(KvDatabaseError::WalletNotInitialized)
+        ));
+        assert!(matches!(
+            database.get_cache_height(),
+            Err(KvDatabaseError::WalletNotInitialized)
+        ));
+    }
 }
 
 #[test]
@@ -220,6 +263,13 @@ fn test_get_transaction_not_found() {
     let database = setup_test();
     let cached_tx = get_test_cached_transaction();
 
+    // looking up a transaction we never saved tells us it's not found
+    #[cfg(feature = "memory-database")]
+    assert!(matches!(
+        database.get_transaction(&cached_tx.hash),
+        Err(MemoryDatabaseError::PoisonedLock)
+    ));
+    #[cfg(not(feature = "memory-database"))]
     assert!(matches!(
         database.get_transaction(&cached_tx.hash),
         Err(KvDatabaseError::TransactionNotFound)
