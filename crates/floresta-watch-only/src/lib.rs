@@ -142,11 +142,11 @@ impl Default for CachedTransaction {
 /// An address inside our cache, contains all information we need to satisfy electrum's requests
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedAddress {
-    script_hash: Hash,
-    balance: u64,
-    script: ScriptBuf,
-    transactions: Vec<Txid>,
-    utxos: Vec<OutPoint>,
+    pub script_hash: Hash,
+    pub balance: u64,
+    pub script: ScriptBuf,
+    pub transactions: Vec<Txid>,
+    pub utxos: Vec<OutPoint>,
 }
 
 /// Holds some useful data about our wallet, like how many addresses we have, how many

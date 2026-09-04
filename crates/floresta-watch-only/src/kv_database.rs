@@ -212,7 +212,7 @@ impl AddressCacheDatabase for KvDatabase {
         if let Some(stats) = stats {
             return Ok(serde_json::de::from_slice(&stats)?);
         }
-        Err(KvDatabaseError::TransactionNotFound)
+        Err(KvDatabaseError::WalletNotInitialized)
     }
 
     /// Save [`Stats`] to the [`KvDatabase`].
