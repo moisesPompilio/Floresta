@@ -1312,9 +1312,13 @@ impl<PersistedState: ChainStore> UpdatableChainstate for ChainState<PersistedSta
 
         self.update_view(assumed_header.try_height()?, &assumed_header, acc.clone())?;
 
-        let mut guard = write_lock!(self);
-        guard.best_block.validation_index = assumed_hash;
-        guard.acc = acc;
+        {
+            let mut guard = write_lock!(self);
+            guard.best_block.validation_index = assumed_hash;
+            guard.acc = acc;
+        }
+
+        self.flush()?;
 
         Ok(true)
     }
@@ -2644,7 +2648,6 @@ mod test {
             Some(acc.clone())
         );
 
-        chain.flush().unwrap();
         drop(chain);
 
         let chain = ChainState::open(
