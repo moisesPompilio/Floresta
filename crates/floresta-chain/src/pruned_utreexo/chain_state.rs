@@ -1310,14 +1310,7 @@ impl<PersistedState: ChainStore> UpdatableChainstate for ChainState<PersistedSta
             curr_header = self.get_ancestor(&header)?;
         }
 
-        self.update_view(assumed_header.try_height()?, &assumed_header, acc.clone())?;
-
-        {
-            let mut guard = write_lock!(self);
-            guard.best_block.validation_index = assumed_hash;
-            guard.acc = acc;
-        }
-
+        self.update_view(assumed_header.try_height()?, &assumed_header, acc)?;
         self.flush()?;
 
         Ok(true)
