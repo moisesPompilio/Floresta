@@ -996,6 +996,7 @@ mod tests {
     use bitcoin::TxIn;
     use bitcoin::TxOut;
     use bitcoin::Txid;
+    use bitcoin::Witness;
     use bitcoin::absolute::LockTime;
     use bitcoin::consensus::deserialize;
     use bitcoin::consensus::encode::deserialize_hex;
@@ -1376,6 +1377,100 @@ mod tests {
         match consensus.check_block(&block, height) {
             Err(BlockchainError::BlockValidation(BlockValidationErrors::BlockTooBig)) => (),
             other => panic!("We should have `BlockValidationErrors::BlockTooBig`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_get_bip34_height() {
+        let block = decode_block("./testdata/block_866342/raw.zst");
+
+        assert_eq!(Consensus::get_bip34_height(&block), Some(866_342));
+    }
+
+    #[test]
+    fn test_get_bip34_height_no_coinbase() {
+        let mut block = decode_block("./testdata/block_866342/raw.zst");
+        block.txdata = Vec::new();
+
+        assert_eq!(Consensus::get_bip34_height(&block), None);
+    }
+
+    #[test]
+    fn test_get_bip34_height_empty_coinbase() {
+        let mut block = decode_block("./testdata/block_866342/raw.zst");
+        block.txdata = vec![Transaction {
+            version: Version::ONE,
+            lock_time: LockTime::ZERO,
+            input: Vec::new(),
+            output: Vec::new(),
+        }];
+
+        assert_eq!(Consensus::get_bip34_height(&block), None);
+    }
+
+    #[test]
+    fn test_get_bip34_height_invalid_script() {
+        let tx = Transaction {
+            version: Version::ONE,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::from_bytes(vec![0x02, 0x01]),
+                sequence: Sequence::MAX,
+                witness: Witness::default(),
+            }],
+            output: Vec::new(),
+        };
+
+        let mut block = decode_block("./testdata/block_866342/raw.zst");
+        block.txdata = vec![tx];
+
+        assert_eq!(Consensus::get_bip34_height(&block), None);
+    }
+
+    #[test]
+    fn test_get_bip34_height_non_push_instruction() {
+        let tx = Transaction {
+            version: Version::ONE,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::from_bytes(vec![]),
+                sequence: Sequence::MAX,
+                witness: Witness::default(),
+            }],
+            output: Vec::new(),
+        };
+
+        let mut block = decode_block("./testdata/block_866342/raw.zst");
+        block.txdata = vec![tx];
+
+        assert_eq!(Consensus::get_bip34_height(&block), None);
+    }
+
+    #[test]
+    fn test_get_bip34_height_op_pushnum() {
+        for (opcode, expected) in (0x51..=0x60).zip(1..=16) {
+            let tx = Transaction {
+                version: Version::ONE,
+                lock_time: LockTime::ZERO,
+                input: vec![TxIn {
+                    previous_output: OutPoint::null(),
+                    script_sig: ScriptBuf::from_bytes(vec![opcode]),
+                    sequence: Sequence::MAX,
+                    witness: Witness::default(),
+                }],
+                output: Vec::new(),
+            };
+
+            let mut block = decode_block("./testdata/block_866342/raw.zst");
+            block.txdata = vec![tx];
+
+            assert_eq!(
+                Consensus::get_bip34_height(&block),
+                Some(expected),
+                "opcode {opcode:#x}"
+            );
         }
     }
 
