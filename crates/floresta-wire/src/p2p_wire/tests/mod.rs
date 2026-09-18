@@ -4,4 +4,4 @@ mod blocks;
 mod chain_selector;
 mod peer_latency;
 mod sync_node;
-mod utils;
+pub mod utils;
