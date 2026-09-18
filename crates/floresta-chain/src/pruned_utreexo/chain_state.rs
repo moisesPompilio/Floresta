@@ -1030,7 +1030,7 @@ impl<PersistedState: ChainStore> ChainState<PersistedState> {
         inputs: HashMap<OutPoint, UtxoData>,
     ) -> Result<(), BlockchainError> {
         let consensus = read_lock!(self).consensus.clone();
-        consensus.check_block(block, height)?;
+        consensus.check_block(block, height, true)?;
 
         // Validate block transactions
         let subsidy = consensus.get_subsidy(height);
@@ -1340,6 +1340,10 @@ impl<PersistedState: ChainStore> UpdatableChainstate for ChainState<PersistedSta
     fn update_ibd(&self, ibd_state: IBDState) {
         let mut inner = write_lock!(self);
         inner.ibd = ibd_state;
+    }
+
+    fn check_block_structure(&self, block: &Block) -> Result<(), BlockchainError> {
+        Consensus::check_block_structure(block).map(|_| ())
     }
 
     fn connect_block(

@@ -41,6 +41,7 @@ use super::error::BlockchainError;
 use super::udata;
 use crate::TransactionError;
 use crate::extensions::Bip30UnspendableExt;
+use crate::pruned_utreexo::merkle::compute_txid;
 use crate::pruned_utreexo::utxo_data::UtxoData;
 use crate::swift_sync_agg::SipHashKeys;
 use crate::swift_sync_agg::TxidHashMidstate;
@@ -549,24 +550,18 @@ impl Consensus {
         Ok(out_value)
     }
 
-    /// Runs inexpensive, consensus-critical block checks that don't require script execution. If
+    /// Runs inexpensive, consensus-critical block checks that require no chain
+    /// context: the merkle root, the witness commitment and the block weight. If
     /// successful, returns the list of [`Txid`]s computed for the merkle root check.
     ///
     /// This verifies:
     /// - the header merkle root matches the block's txids
-    /// - BIP34 coinbase-encoded height once activated (at `bip34_height`)
     /// - if there are SegWit transactions, the witness commitment is present and correct
     /// - total block weight is within the 4,000,000 WU limit
-    pub fn check_block(&self, block: &Block, height: u32) -> Result<Vec<Txid>, BlockchainError> {
+    pub fn check_block_structure(block: &Block) -> Result<Vec<Txid>, BlockchainError> {
         let Some(txids) = Self::check_merkle_root(block) else {
             Err(BlockValidationErrors::BadMerkleRoot)?
         };
-
-        let bip34_height = self.parameters.params.bip34_height;
-        // If bip34 is active, check that the encoded block height is correct
-        if height >= bip34_height && Self::get_bip34_height(block) != Some(height) {
-            Err(BlockValidationErrors::BadBip34)?;
-        }
 
         if !block.check_witness_commitment() {
             Err(BlockValidationErrors::BadWitnessCommitment)?;
@@ -574,6 +569,29 @@ impl Consensus {
 
         if block.weight() > Weight::MAX_BLOCK {
             Err(BlockValidationErrors::BlockTooBig)?;
+        }
+
+        Ok(txids)
+    }
+
+    /// Runs [`Consensus::check_block_structure`] plus the BIP34 check, which
+    /// requires the block's height.
+    pub fn check_block(
+        &self,
+        block: &Block,
+        height: u32,
+        check_block_structure: bool,
+    ) -> Result<Vec<Txid>, BlockchainError> {
+        let txids = if check_block_structure {
+            Self::check_block_structure(block)?
+        } else {
+            block.txdata.iter().map(compute_txid).collect()
+        };
+
+        let bip34_height = self.parameters.params.bip34_height;
+        // If bip34 is active, check that the encoded block height is correct
+        if height >= bip34_height && Self::get_bip34_height(block) != Some(height) {
+            Err(BlockValidationErrors::BadBip34)?;
         }
 
         Ok(txids)
@@ -616,7 +634,7 @@ impl Consensus {
         unspent_indexes: HashSet<u32>,
         salt: &SipHashKeys,
     ) -> Result<(SwiftSyncAgg, Amount), BlockchainError> {
-        let txids = self.check_block(block, height)?;
+        let txids = self.check_block(block, height, true)?;
 
         Self::verify_block_transactions_swiftsync(height, block, txids, unspent_indexes, salt)
     }
@@ -1321,11 +1339,24 @@ mod tests {
         assert!(block.check_merkle_root());
         assert!(Consensus::check_merkle_root(&block).is_none());
 
-        let consensus = Consensus::from(Network::Bitcoin);
         assert!(matches!(
-            consensus.check_block(&block, 866_342),
+            Consensus::check_block_structure(&block),
             Err(BlockchainError::BlockValidation(
                 BlockValidationErrors::BadMerkleRoot
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_check_block_structure_bad_witness_commitement() {
+        let mut block = decode_block("./testdata/block_866342/raw.zst");
+        block.txdata.truncate(6);
+        block.header.merkle_root = block.compute_merkle_root().unwrap();
+
+        assert!(matches!(
+            Consensus::check_block_structure(&block),
+            Err(BlockchainError::BlockValidation(
+                BlockValidationErrors::BadWitnessCommitment
             ))
         ));
     }
@@ -1335,8 +1366,7 @@ mod tests {
     fn build_oversized_866_342() -> Block {
         let mut block = decode_block("./testdata/block_866342/raw.zst");
 
-        let consensus = Consensus::from(Network::Bitcoin);
-        consensus.check_block(&block, 866_342).expect("valid block");
+        Consensus::check_block_structure(&block).expect("valid block");
 
         // This block is close but below to the max weight
         assert_eq!(block.weight().to_wu(), 3_993_209);
@@ -1360,8 +1390,6 @@ mod tests {
 
     #[test]
     fn test_block_too_big() {
-        let height = 866_342;
-        let consensus = Consensus::from(Network::Bitcoin);
         let block = build_oversized_866_342();
 
         // This block is now just over the weight limit, by one unit!
@@ -1374,7 +1402,7 @@ mod tests {
         assert!(block.check_witness_commitment());
         Consensus::check_merkle_root(&block).expect("merkle root matches");
 
-        match consensus.check_block(&block, height) {
+        match Consensus::check_block_structure(&block) {
             Err(BlockchainError::BlockValidation(BlockValidationErrors::BlockTooBig)) => (),
             other => panic!("We should have `BlockValidationErrors::BlockTooBig`, got {other:?}"),
         }

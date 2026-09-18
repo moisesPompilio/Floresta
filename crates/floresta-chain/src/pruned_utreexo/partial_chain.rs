@@ -204,7 +204,7 @@ impl PartialChainStateInner {
         height: u32,
         inputs: HashMap<bitcoin::OutPoint, UtxoData>,
     ) -> Result<(), BlockchainError> {
-        self.consensus.check_block(block, height)?;
+        self.consensus.check_block(block, height, true)?;
 
         let prev_block = self.get_ancestor(height)?;
         if block.header.prev_blockhash != prev_block.block_hash() {
@@ -303,6 +303,10 @@ impl UpdatableChainstate for PartialChainState {
     ) -> Result<u32, BlockchainError> {
         self.inner_mut()
             .process_block(block, proof, inputs, del_hashes)
+    }
+
+    fn check_block_structure(&self, block: &bitcoin::Block) -> Result<(), BlockchainError> {
+        Consensus::check_block_structure(block).map(|_| ())
     }
 
     fn get_root_hashes(&self) -> Vec<BitcoinNodeHash> {

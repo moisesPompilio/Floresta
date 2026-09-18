@@ -181,6 +181,10 @@ impl BlockchainInterface for MockChain {
 }
 
 impl UpdatableChainstate for MockChain {
+    fn check_block_structure(&self, _block: &Block) -> Result<(), BlockchainError> {
+        Ok(())
+    }
+
     fn connect_block(
         &self,
         _block: &Block,
