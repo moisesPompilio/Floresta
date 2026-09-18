@@ -307,11 +307,10 @@ where
     }
 
     /// Handles an error raised while processing a block, either by [`proof_util::process_proof`]
-    /// or [`UpdatableChainstate::connect_block`], banning the responsible peer if any.
+    /// or [`UpdatableChainstate::connect_block`].
     ///
-    /// Only chain errors caused by peer-supplied data lead to a ban; any other error is our own
-    /// fault (e.g. a database failure) and never punishes a peer: non-chain errors are propagated
-    /// unchanged, and chain errors that aren't validation failures are only logged.
+    /// Non-blockchain errors are propagated unchanged; blockchain ones are forwarded to
+    /// [`Self::handle_block_error`], which blames and punishes the responsible peer.
     ///
     /// [`UpdatableChainstate::connect_block`]: floresta_chain::pruned_utreexo::UpdatableChainstate::connect_block
     fn handle_process_block_error(
@@ -325,6 +324,25 @@ where
             Err(err)?
         };
 
+        self.handle_block_error(chain_err, block, block_peer, Some(utreexo_peer))
+    }
+
+    /// Handles chain errors caused by peer-supplied block or Utreexo data.
+    ///
+    /// Identifies the responsible peer, disconnects and bans it, and returns
+    /// [`WireError::PeerMisbehaving`]. Errors caused by local failures, such as
+    /// database errors, are not attributed to a peer and are not punished.
+    ///
+    /// `utreexo_peer` is `Some` when the error occurred while processing data
+    /// supplied by a Utreexo peer, and `None` when it occurred before any Utreexo
+    /// peer was involved.
+    fn handle_block_error(
+        &mut self,
+        chain_err: BlockchainError,
+        block: Block,
+        block_peer: PeerId,
+        utreexo_peer: Option<PeerId>,
+    ) -> Result<(), WireError> {
         // Return early if the error is not from block validation (e.g., a database error)
         let e = match chain_err {
             BlockchainError::TransactionError(tx_err) => tx_err.error,
@@ -338,8 +356,14 @@ where
 
         let block_hash = block.block_hash();
 
-        let Some(blamed_peer) = self.handle_validation_errors(&e, block, block_peer, utreexo_peer)
-        else {
+        let blamed_peer;
+        if let Some(utreexo_peer) = utreexo_peer {
+            blamed_peer = self.blame_peer_for_block_error(&e, block, block_peer, utreexo_peer);
+        } else {
+            blamed_peer = self.blame_block_peer_for_block_error(&e, block_peer, block_hash);
+        }
+
+        let Some(blamed_peer) = blamed_peer else {
             return Ok(());
         };
 
@@ -352,10 +376,16 @@ where
         Err(WireError::PeerMisbehaving)
     }
 
-    /// Handles the different block validation errors that can happen when connecting a block.
+    /// Finds the peer responsible for a block validation error.
     ///
-    /// Returns the peer id that caused this error, since it could be block or utreexo-related.
-    fn handle_validation_errors(
+    /// Most error kinds can only be caused by the peer that sent us the block; for
+    /// those, see [`Self::blame_block_peer_for_block_error`]. The remaining ones are
+    /// utreexo-related and can only be caused by the peer that sent us the proof and
+    /// leaf data: in this case, the block is re-inserted into the pending map, so we
+    /// can request a new proof from another peer (see [`Self::ask_for_missed_proofs`]).
+    ///
+    /// Returns the peer id that caused this error, if any.
+    fn blame_peer_for_block_error(
         &mut self,
         e: &BlockValidationErrors,
         block: Block,
@@ -363,6 +393,10 @@ where
         utreexo_peer: PeerId,
     ) -> Option<PeerId> {
         let hash = block.block_hash();
+        if let Some(peer) = self.blame_block_peer_for_block_error(e, block_peer, hash) {
+            return Some(peer);
+        }
+
         match e {
             // The utreexo peer sent us an invalid utreexo proof. Block is not yet processed.
             BlockValidationErrors::InvalidUtreexoProof => {
@@ -382,6 +416,31 @@ where
                 Some(utreexo_peer)
             }
 
+            _ => None,
+        }
+    }
+
+    /// Finds whether the peer that sent us the block is responsible for a block
+    /// validation error, enforcing the consensus for each error kind:
+    ///
+    /// - Consensus-invalid blocks (bad coinbase, invalid scripts, wrong amounts...):
+    ///   the block is invalidated in our chain and the peer is to blame.
+    /// - Mutated blocks (bad merkle root or witness commitment): the original block
+    ///   may still be valid, so we don't invalidate it, the peer is still to blame.
+    /// - The block doesn't extend our tip: this is our mistake, no peer is to blame.
+    ///
+    /// Any other error kind is not the block peer's fault: utreexo-related errors are
+    /// attributed by the caller ([`Self::blame_peer_for_block_error`]), and structural
+    /// errors are checked when the block first arrives.
+    ///
+    /// Returns the peer id to blame, if any.
+    fn blame_block_peer_for_block_error(
+        &mut self,
+        e: &BlockValidationErrors,
+        block_peer: PeerId,
+        hash: BlockHash,
+    ) -> Option<PeerId> {
+        match e {
             // The block is invalid, so we have to invalidate it in our chain.
             BlockValidationErrors::InvalidCoinbase(_)
             | BlockValidationErrors::ScriptValidationError(_)
@@ -422,6 +481,8 @@ where
                 // This is our mistake, don't punish any peer
                 None
             }
+
+            _ => None,
         }
     }
 }
