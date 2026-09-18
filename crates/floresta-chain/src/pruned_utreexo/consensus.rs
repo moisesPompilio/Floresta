@@ -1259,6 +1259,47 @@ mod tests {
     }
 
     #[test]
+    fn test_check_block() {
+        let height = 866_342;
+        let consensus = Consensus::from(Network::Bitcoin);
+        let block = decode_block_866342();
+
+        let txids = consensus.check_block(&block, height).unwrap();
+        let expected_txid = block
+            .txdata
+            .iter()
+            .map(|tx| tx.compute_txid())
+            .collect::<Vec<_>>();
+
+        assert_eq!(txids, expected_txid);
+    }
+
+    #[test]
+    fn test_check_block_bad_bip34() {
+        let consensus = Consensus::from(Network::Bitcoin);
+        let height = consensus.parameters.params.bip34_height + 3;
+        let mut block = decode_block_866342();
+
+        // Encode a different height in the coinbase scriptSig.
+        block.txdata[0].input[0].script_sig = ScriptBuf::from_bytes(vec![0x03, 0x01, 0x00, 0x00]);
+        update_witness_commitment(&mut block);
+        block.header.merkle_root = block.compute_merkle_root().unwrap();
+
+        let error = consensus.check_block(&block, height).unwrap_err();
+        assert!(matches!(
+            error,
+            BlockchainError::BlockValidation(BlockValidationErrors::BadBip34)
+        ));
+
+        let height = consensus.parameters.params.bip34_height;
+        let error = consensus.check_block(&block, height).unwrap_err();
+        assert!(matches!(
+            error,
+            BlockchainError::BlockValidation(BlockValidationErrors::BadBip34)
+        ));
+    }
+
+    #[test]
     fn test_get_bip34_height() {
         let block = decode_block_866342();
 
