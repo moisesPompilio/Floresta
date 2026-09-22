@@ -7,7 +7,7 @@ description = "Common types and functions for Floresta"
 authors = ["Floresta Developers <contact@getfloresta.org>"]
 license.workspace = true
 repository = "https://github.com/getfloresta/Floresta"
-readme.workspace = true # Floresta/README.md
+readme = "README.md"
 
 [dependencies]
 # All dependencies MUST be pinned precisely with `X.Y.z`
