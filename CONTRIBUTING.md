@@ -22,6 +22,35 @@ To contribute a patch, the workflow is as follows:
   2. Create topic branch
   3. Commit patches
 
+### Working on crates published to crates.io
+
+Some Floresta crates are consumed as published releases from crates.io. Their
+local sources can remain workspace members and be included in workspace-wide
+tests, but local changes do not automatically affect crates that depend on the
+published releases.
+
+To test changes to one of these crates with the rest of Floresta, temporarily add
+a `[patch.crates-io]` entry to the root `Cargo.toml`. For example:
+
+```toml
+[patch.crates-io]
+floresta-common = { path = "crates/floresta-common" }
+```
+
+Use the name and local path of the crate you are modifying. Its version must
+satisfy the consumers' dependency requirements; for an exact pin, it must match
+that version. Check both the shared dependencies in the root `Cargo.toml` and
+any direct declarations in individual crate manifests.
+
+Remove the temporary override after testing and run `cargo check --workspace`
+to restore crates.io resolution in `Cargo.lock`. Do not commit the temporary
+override or its lockfile changes.
+See the [Cargo dependency override documentation](https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html)
+for more details.
+
+When adopting a newly published release, update all relevant dependency pins
+and commit the resulting `Cargo.lock` changes.
+
 ### Commits
 
 In general commits should be atomic and diffs should be easy to read.

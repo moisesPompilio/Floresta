@@ -984,7 +984,7 @@ version = "0.5.0"
 dependencies = [
  "bitcoin",
  "floresta-chain",
- "floresta-common",
+ "floresta-common 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "floresta-compact-filters",
  "floresta-domain",
  "floresta-electrum",
@@ -1007,7 +1007,7 @@ dependencies = [
  "bitcoin_hashes 1.1.0",
  "bitcoinkernel",
  "criterion",
- "floresta-common",
+ "floresta-common 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "floresta-metrics",
  "hex",
  "lru",
@@ -1030,7 +1030,7 @@ dependencies = [
  "anyhow",
  "bitcoin",
  "clap",
- "floresta-common",
+ "floresta-common 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "floresta-rpc",
  "serde_json",
 ]
@@ -1038,6 +1038,18 @@ dependencies = [
 [[package]]
 name = "floresta-common"
 version = "1.0.0"
+dependencies = [
+ "bitcoin",
+ "hashbrown 0.17.1",
+ "spin",
+ "tracing",
+]
+
+[[package]]
+name = "floresta-common"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3718d865bd8345a920619eaa4a150f8e75cf70582354d67306b899075f9f40b"
 dependencies = [
  "bitcoin",
  "hashbrown 0.17.1",
@@ -1068,7 +1080,7 @@ version = "0.5.0"
 dependencies = [
  "bitcoin",
  "floresta-chain",
- "floresta-common",
+ "floresta-common 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "floresta-compact-filters",
  "floresta-mempool",
  "floresta-watch-only",
@@ -1103,7 +1115,7 @@ dependencies = [
  "ahash",
  "bitcoin",
  "floresta-chain",
- "floresta-common",
+ "floresta-common 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "floresta-domain",
  "rand 0.10.2",
  "rustreexo",
@@ -1129,7 +1141,7 @@ dependencies = [
  "corepc-types",
  "dns-lookup",
  "floresta-chain",
- "floresta-common",
+ "floresta-common 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "floresta-compact-filters",
  "floresta-domain",
  "floresta-electrum",
@@ -1173,7 +1185,7 @@ version = "0.5.0"
 dependencies = [
  "bitcoin",
  "floresta-chain",
- "floresta-common",
+ "floresta-common 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "kv",
  "miniscript",
  "rand 0.10.2",
@@ -1192,7 +1204,7 @@ dependencies = [
  "derive_more",
  "dns-lookup",
  "floresta-chain",
- "floresta-common",
+ "floresta-common 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "floresta-compact-filters",
  "floresta-domain",
  "floresta-mempool",
@@ -1218,7 +1230,7 @@ dependencies = [
  "clap",
  "console-subscriber",
  "dirs",
- "floresta-common",
+ "floresta-common 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "floresta-node",
  "libc",
  "tokio",
