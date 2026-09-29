@@ -611,6 +611,7 @@ where
     /// Checks whether some of our inflight requests have timed out.
     ///
     /// Disconnects unresponsive peers without banning them and retries their requests.
+    /// Manual peers keep their connection when requests time out.
     /// Address timeouts only disconnect feeler peers.
     pub(crate) fn check_for_timeout(&mut self) -> Result<(), WireError> {
         let now = Instant::now();
@@ -644,6 +645,7 @@ where
             if timed_out_fn(&req, &time).is_none() {
                 continue;
             }
+
             // Remove it now to avoid retrying it both during disconnection and below.
             self.inflight.remove(&req);
 
@@ -656,18 +658,22 @@ where
                     continue;
                 }
 
-                let idx = peer_data.address.id;
-                let _ = self.send_to_peer(peer, NodeRequest::Shutdown);
-                // Remove the peer before retrying, without waiting for its task to stop.
-                // It cannot be selected again, and the common handler discards late replies.
-                if let Err(e) = self.handle_disconnection(peer, idx) {
-                    retry_error = Some(e);
+                // Disconnect peers on timeout unless they are manual (and completed handshake).
+                if !peer_data.is_manual_peer() || matches!(req, InflightRequests::Connect(_)) {
+                    let idx = peer_data.address.id;
+                    let _ = self.send_to_peer(peer, NodeRequest::Shutdown);
+
+                    // Remove the peer before retrying, without waiting for its task to stop.
+                    // It cannot be selected again, and the common handler discards late replies.
+                    if let Err(e) = self.handle_disconnection(peer, idx) {
+                        retry_error = Some(e);
+                    }
                 }
             }
 
             if let Err(e) = self.redo_inflight_request(&req) {
                 // CRITICAL: never drop the request, so we retry it later, on the next tick.
-                // Keep the old timestamp so it stays expired. This does not restore the peer.
+                // Keep the old timestamp so it stays expired.
                 self.inflight.insert(req, (peer, time));
                 // Retry the remaining requests before returning an error.
                 retry_error = Some(e);

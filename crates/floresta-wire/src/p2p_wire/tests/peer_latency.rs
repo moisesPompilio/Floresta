@@ -126,8 +126,8 @@ mod tests {
     }
 
     #[tokio::test]
-    // Verifies that address timeouts preserve ordinary peers, but still disconnect feelers
-    // and peers with a separate data timeout in every node context.
+    // Verifies that address timeouts preserve ordinary peers and manual data requests
+    // are retried, while feeler and handshake timeouts still disconnect in every context.
     async fn test_address_timeout() {
         fn check<T: 'static + Default + NodeContext>() {
             let mut node = latency_node::<T>();
@@ -153,26 +153,48 @@ mod tests {
                 ));
             }
 
-            // A separate headers timeout must still disconnect the peer and retry.
+            // With no ready alternative, retry the manual peer without disconnecting it.
             node.peers.get_mut(&0).unwrap().kind = ConnectionKind::Manual;
+            node.peers.get_mut(&1).unwrap().state = PeerStatus::Awaiting;
             node.inflight
                 .insert(InflightRequests::GetAddresses, (0, expired));
             node.inflight
                 .insert(InflightRequests::Headers, (0, expired));
             node.check_for_timeout().unwrap();
-            assert!(!node.peers.contains_key(&0));
+            assert!(node.peers.contains_key(&0));
+            assert_eq!(node.inflight.len(), 1);
+            let (peer, sent_at) = node.inflight[&InflightRequests::Headers];
+            assert_eq!(peer, 0);
+            assert!(sent_at > expired);
             assert!(matches!(
                 messages.try_recv().unwrap(),
-                NodeRequest::Shutdown
+                NodeRequest::GetHeaders(_)
             ));
-            assert_eq!(node.inflight.len(), 1);
-            assert_eq!(node.inflight[&InflightRequests::Headers].0, 1);
+
+            // Manual peers must still complete the handshake before its deadline.
+            node.peers.get_mut(&0).unwrap().state = PeerStatus::Awaiting;
+            node.inflight.clear();
+            node.inflight.insert(
+                InflightRequests::Connect(0),
+                (
+                    0,
+                    Instant::now() - Duration::from_secs(T::CONNECTION_TIMEOUT + 1),
+                ),
+            );
+            node.check_for_timeout().unwrap();
+            assert!(!node.peers.contains_key(&0));
+            assert!(matches!(
+                messages.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ));
+            assert!(node.inflight.is_empty());
 
             // Feelers are temporary address-discovery connections, so close them on timeout.
             node.inflight.clear();
             let (sender, mut messages) = unbounded_channel();
             let peer = node.peers.get_mut(&1).unwrap();
             peer.channel = sender;
+            peer.state = PeerStatus::Ready;
             peer.kind = ConnectionKind::Feeler;
             node.inflight
                 .insert(InflightRequests::GetAddresses, (1, expired));
