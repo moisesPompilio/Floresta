@@ -4,7 +4,7 @@ version = "0.5.0"
 authors = ["Floresta Developers <contact@getfloresta.org>"]
 rust-version.workspace = true
 edition.workspace = true
-repository = "https://github.com/davidson-souza/floresta"
+repository = "https://github.com/getfloresta/Floresta"
 description = """
 BIP158 compact filters for easy rescan of the blockchain in light clients.
 """
