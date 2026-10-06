@@ -299,10 +299,16 @@ pub fn start_logger(
             .with_filter(make_filter())
     });
 
-    tracing_subscriber::registry()
+    let registry = tracing_subscriber::registry()
         .with(fmt_layer_stdout)
-        .with(fmt_layer_logfile)
-        .init();
+        .with(fmt_layer_logfile);
+
+    #[cfg(feature = "tokio-console")]
+    // Spawns the tokio-console gRPC server on a dedicated background thread
+    // with its own runtime.
+    let registry = registry.with(console_subscriber::spawn());
+
+    registry.init();
 
     Ok(guard)
 }
