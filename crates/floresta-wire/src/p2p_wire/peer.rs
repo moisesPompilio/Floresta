@@ -39,6 +39,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tracing::debug;
 use tracing::error;
 use tracing::warn;
@@ -764,7 +765,7 @@ impl<T: AsyncWrite + Unpin + Send + Sync> Peer<T> {
         our_best_block: u32,
         cancellation_sender: tokio::sync::oneshot::Sender<()>,
         transport_protocol: TransportProtocol,
-    ) {
+    ) -> JoinHandle<Result<Peer<W>>> {
         let peer = Peer {
             address,
             blocks_only: false,
@@ -796,7 +797,7 @@ impl<T: AsyncWrite + Unpin + Send + Sync> Peer<T> {
             timeouts: PeerTimeouts::default(),
         };
 
-        spawn(peer.read_loop());
+        spawn(peer.read_loop())
     }
 
     async fn handle_ping(&mut self, nonce: u64) -> Result<()> {
