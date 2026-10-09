@@ -144,12 +144,6 @@ impl NodeContext for ChainSelector {
     // Since we don't have any peers when chain selection starts, we use a more aggressive batch
     // size to make sure we get to our `MAX_OUTGOING_CONNECTIONS` ASAP
     const NEW_CONNECTIONS_BATCH_SIZE: usize = 12;
-
-    fn get_required_services(&self) -> ServiceFlags {
-        ServiceFlags::NETWORK
-            | service_flags::UTREEXO.into()
-            | service_flags::UTREEXO_ARCHIVE.into()
-    }
 }
 
 impl<Chain> UtreexoNode<Chain, ChainSelector>

@@ -69,13 +69,6 @@ pub struct RunningNode {
 
 impl NodeContext for RunningNode {
     const REQUEST_TIMEOUT: u64 = 2 * 60;
-
-    fn get_required_services(&self) -> ServiceFlags {
-        ServiceFlags::NETWORK
-            | service_flags::UTREEXO.into()
-            | ServiceFlags::WITNESS
-            | ServiceFlags::COMPACT_FILTERS
-    }
 }
 
 impl Default for RunningNode {
