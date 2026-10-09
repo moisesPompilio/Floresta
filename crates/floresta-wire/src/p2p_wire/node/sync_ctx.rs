@@ -36,16 +36,6 @@ use crate::p2p_wire::peer::PeerMessages;
 pub struct SyncNode {}
 
 impl NodeContext for SyncNode {
-    /// Get the required [services](ServiceFlags) for the [`SyncNode`].
-    ///
-    /// The [`SyncNode`] is active during IBD, and therefore requires that peers support:
-    ///   * `NETWORK`: the peer is capable of serving the entire blockchain.
-    ///   * `WITNESS`: the peer is capable of serving blocks and transactions with witness data.
-    ///   * `UTREEXO_ARCHIVE`: the peer is capable of serving inclusion proofs for the entire blockchain.
-    fn get_required_services(&self) -> ServiceFlags {
-        ServiceFlags::NETWORK | ServiceFlags::WITNESS | service_flags::UTREEXO_ARCHIVE.into()
-    }
-
     const REQUEST_TIMEOUT: u64 = 60 * 2; // 2 minutes
     const MAX_INFLIGHT_REQUESTS: usize = 100; // double the default
 
