@@ -24,6 +24,9 @@ pub mod rpc;
 pub mod rpc_interfaces;
 pub mod rpc_types;
 
+/// Indicates whether the `async` feature is enabled or disabled.
+pub const IS_ASYNC: bool = cfg!(feature = "async");
+
 // Those tests doesn't work on windows
 // TODO (Davidson): work on windows?
 

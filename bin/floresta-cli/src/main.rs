@@ -20,6 +20,15 @@ use floresta_rpc::rpc_interfaces::WalletRpc;
 use floresta_rpc::rpc_types::AddNodeCommand;
 use floresta_rpc::rpc_types::RescanConfidence;
 
+// `floresta-cli` cannot be built with the `async` feature. If another crate in the same
+// build enables it (feature unification), build this binary alone.
+const _: () = assert!(
+    !floresta_rpc::IS_ASYNC,
+    "floresta-cli requires `floresta-rpc` without the `async` feature, but a crate built in \
+     the same invocation (e.g. `floresta-node`) enables it through feature unification. \
+     Build this binary on its own: `cargo build -p floresta-cli`."
+);
+
 // Main function that runs the CLI application
 fn main() -> anyhow::Result<()> {
     // Parse command line arguments into a Cli struct
