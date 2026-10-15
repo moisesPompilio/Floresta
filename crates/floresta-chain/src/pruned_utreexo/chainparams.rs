@@ -228,8 +228,8 @@ impl ChainParams {
     /// - [`AssumeValidArg::Disabled`] — no checkpoint; all scripts are validated.
     /// - [`AssumeValidArg::UserInput`] — use the provided hash.
     /// - [`AssumeValidArg::Hardcoded`] — use a release-time checkpoint per [`Network`]:
-    ///   - **Bitcoin**: block [939,969](https://mempool.space/block/939969)
-    ///   - **Signet**: block [296,870](https://mempool.space/signet/block/296870)
+    ///   - **Bitcoin**: block [971,420](https://mempool.space/block/971420)
+    ///   - **Signet**: block [326,326](https://mempool.space/signet/block/326326)
     ///   - **Testnet**: block [4,887,983](https://mempool.space/testnet/block/4887983)
     ///   - **Testnet4**: block [126,514](https://mempool.space/testnet4/block/126514)
     ///   - **Regtest**: genesis block
@@ -239,10 +239,10 @@ impl ChainParams {
             AssumeValidArg::UserInput(hash) => Some(hash),
             AssumeValidArg::Hardcoded => match network {
                 Network::Bitcoin => Some(bhash!(
-                    "000000000000000000009d36aae180d04aeac872adb14e22f65c8b6647a8bf79" // 939_969
+                    "000000000000000000019d4afaefa42fc5b4211a7edcce7681a1478df661ead6" // 971_420
                 )),
                 Network::Signet => Some(bhash!(
-                    "000000068d38e9cfa53268a08b32dab55118a58e5212729b016ee3c9c66387a6" // 296_870
+                    "00000008f507c8db68879442b1eea8c312fd66b445d4dd9b1b12c4bc8188ef64" // 326_326
                 )),
                 Network::Testnet => Some(bhash!(
                     "000000005cf458fb1f79c8fee78822eead52aee40530a6bbe018cd61f22d6bb1" // 4_887_983
