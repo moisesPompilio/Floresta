@@ -70,7 +70,10 @@ pub struct CachedTransaction {
 
 impl Ord for CachedTransaction {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.height.cmp(&other.height)
+        self.height
+            .cmp(&other.height)
+            .then_with(|| self.position.cmp(&other.position))
+            .then_with(|| self.hash.cmp(&other.hash))
     }
 }
 
@@ -82,7 +85,7 @@ impl PartialOrd for CachedTransaction {
 
 impl PartialEq for CachedTransaction {
     fn eq(&self, other: &Self) -> bool {
-        self.height == other.height
+        self.height == other.height && self.position == other.position && self.hash == other.hash
     }
 }
 
@@ -877,6 +880,7 @@ mod test {
     use bitcoin::address::NetworkChecked;
     use bitcoin::consensus::Decodable;
     use bitcoin::consensus::deserialize;
+    use bitcoin::hashes::Hash;
     use bitcoin::hashes::hex::FromHex;
     use bitcoin::hashes::sha256;
     use floresta_chain::pruned_utreexo::merkle::ConsensusMerkle;
@@ -884,6 +888,7 @@ mod test {
     use floresta_common::prelude::*;
 
     use super::AddressCache;
+    use super::CachedTransaction;
     use super::memory_database::MemoryDatabase;
     use crate::DERIVATION_COUNT;
     use crate::merkle::MerkleProof;
@@ -1113,5 +1118,81 @@ mod test {
 
         assert_eq!(address.transactions.len(), 2);
         assert_eq!(address.utxos.len(), 1);
+    }
+
+    #[test]
+    fn test_cached_transaction_ordering_and_equality() {
+        let tx_at = |height, position, hash_byte| CachedTransaction {
+            height,
+            position,
+            hash: Txid::from_byte_array([hash_byte; 32]),
+            tx: bitcoin::Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::absolute::LockTime::ZERO,
+                input: Vec::new(),
+                output: Vec::new(),
+            },
+            merkle_block: None,
+        };
+
+        let tx1 = tx_at(100, 2, 1);
+        let tx2 = tx_at(100, 5, 2);
+        let tx3 = tx_at(101, 0, 3);
+
+        // Same block, different position: distinct and ordered by position
+        assert_ne!(tx1, tx2);
+        assert!(tx1 < tx2);
+
+        // Same height and position, different txid: distinct and ordered by txid
+        let tx1_other_hash = tx_at(100, 2, 9);
+        assert_ne!(tx1, tx1_other_hash);
+        assert!(tx1 < tx1_other_hash);
+
+        // Same height, position and txid: equal
+        assert_eq!(tx1, tx1.clone());
+
+        // Height takes precedence over position
+        assert!(tx2 < tx3);
+
+        let mut txs = vec![tx3.clone(), tx2.clone(), tx1.clone()];
+        txs.sort();
+        assert_eq!(txs, vec![tx1, tx2, tx3]);
+    }
+
+    #[test]
+    fn test_address_history_orders_by_position_within_block() {
+        // Two different transactions paying to the test address, confirmed in the same block.
+        let mut tx_a: bitcoin::Transaction = deserialize_from_str(
+            "020000000001017ca523c5e6df0c014e837279ab49be1676a9fe7571c3989aeba1e5d534f4054a0000000000fdffffff01d2410f00000000001600142b6a2924aa9b1b115d1ac3098b0ba0e6ed510f2a02473044022071b8583ba1f10531b68cb5bd269fb0e75714c20c5a8bce49d8a2307d27a082df022069a978dac00dd9d5761aa48c7acc881617fa4d2573476b11685596b17d437595012103b193d06bd0533d053f959b50e3132861527e5a7a49ad59c5e80a265ff6a77605eece0100",
+        );
+        let mut tx_b = tx_a.clone();
+        tx_b.output[0].value = bitcoin::Amount::from_sat(1_000);
+        tx_a.output[0].value = bitcoin::Amount::from_sat(2_000);
+
+        let (_, script_hash) = get_test_address();
+        let cache = get_test_cache();
+
+        // Cache the later transaction first, so insertion order differs from block order
+        for (tx, position) in [(&tx_b, 5), (&tx_a, 2)] {
+            cache
+                .cache_transaction(
+                    tx,
+                    118511,
+                    tx.output[0].value.to_sat(),
+                    MerkleProof::default(),
+                    position,
+                    0,
+                    false,
+                    script_hash,
+                )
+                .unwrap();
+        }
+
+        let history = cache.get_address_history(&script_hash).unwrap().unwrap();
+        let history: Vec<_> = history.iter().map(|tx| (tx.position, tx.hash)).collect();
+        assert_eq!(
+            history,
+            vec![(2, tx_a.compute_txid()), (5, tx_b.compute_txid())]
+        );
     }
 }
