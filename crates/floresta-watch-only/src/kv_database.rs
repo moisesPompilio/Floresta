@@ -153,10 +153,8 @@ impl AddressCacheDatabase for KvDatabase {
 
         descriptors.push(String::from(descriptor));
 
-        bucket.set(
-            &String::from("desc"),
-            &serde_json::to_vec(&descriptors).unwrap(),
-        )?;
+        let serialized = serde_json::to_vec(&descriptors)?;
+        bucket.set(&String::from("desc"), &serialized)?;
         bucket.flush()?;
 
         Ok(())
@@ -188,11 +186,9 @@ impl AddressCacheDatabase for KvDatabase {
         let tx_store = self.0.bucket::<&[u8], Vec<u8>>(Some("transactions"))?;
         let bucket = &self.1;
 
+        let txid = tx.tx.compute_txid().as_byte_array().to_vec();
         let serialized_tx = serde_json::to_vec(&tx)?;
-        tx_store.set(
-            &tx.tx.compute_txid().as_byte_array().to_vec().as_slice(),
-            &serialized_tx,
-        )?;
+        tx_store.set(&txid.as_slice(), &serialized_tx)?;
         bucket.flush()?;
 
         Ok(())
@@ -240,13 +236,17 @@ mod test {
 
     use bitcoin::Address;
     use bitcoin::Transaction;
+    use bitcoin::Txid;
     use bitcoin::address::NetworkChecked;
     use bitcoin::consensus::deserialize;
+    use bitcoin::hashes::Hash;
     use bitcoin::hashes::hex::FromHex;
     use bitcoin::hashes::sha256;
     use floresta_common::get_spk_hash;
+    use floresta_domain::wallet::error::WatchOnlyError;
 
     use super::KvDatabase;
+    use super::KvDatabaseError;
     use crate::AddressCacheDatabase;
     use crate::CachedAddress;
     use crate::CachedTransaction;
@@ -320,5 +320,97 @@ mod test {
 
         db.update(&cache_address);
         assert_eq!(db.load().unwrap()[0].script_hash, cache_address.script_hash);
+    }
+
+    #[test]
+    fn test_new_invalid_datadir_error() {
+        // a datadir whose parent is a regular file can't hold a database
+        let parent = std::env::temp_dir().join(format!("{}.txt", rand::random::<u32>()));
+        std::fs::write(&parent, "not a directory").unwrap();
+
+        assert!(KvDatabase::new(parent.join("data")).is_err());
+
+        std::fs::remove_file(&parent).unwrap();
+    }
+
+    #[test]
+    fn test_get_cache_height_wallet_not_initialized_error() {
+        // a wallet that was never initialized has no height
+        let db = get_test_db();
+        let error = db.get_cache_height().unwrap_err();
+
+        assert!(matches!(error, KvDatabaseError::WalletNotInitialized));
+        assert_eq!(error.to_string(), "The wallet is not initialized");
+    }
+
+    #[test]
+    fn test_get_cache_height_deserialize_error() {
+        // a corrupted height is reported instead of panicking
+        let db = get_test_db();
+        db.1.set(&String::from("height"), &vec![0xff]).unwrap();
+
+        let error = db.get_cache_height().unwrap_err();
+
+        assert!(matches!(error, KvDatabaseError::DeserializeError(_)));
+        assert!(
+            error
+                .to_string()
+                .starts_with("Error whilst deserilializing: ")
+        );
+    }
+
+    #[test]
+    fn test_get_stats_wallet_not_initialized_error() {
+        let db = get_test_db();
+        let error = db.get_stats().unwrap_err();
+
+        assert!(matches!(error, KvDatabaseError::WalletNotInitialized));
+        assert_eq!(error.to_string(), "The wallet is not initialized");
+    }
+
+    #[test]
+    fn test_get_transaction_transaction_not_found_error() {
+        let db = get_test_db();
+        let error = db.get_transaction(&Txid::all_zeros()).unwrap_err();
+
+        assert!(matches!(error, KvDatabaseError::TransactionNotFound));
+        assert_eq!(
+            error.to_string(),
+            "The requested transaction was not found in the database"
+        );
+    }
+
+    #[test]
+    fn test_get_descriptors_serde_json_error() {
+        // a corrupted descriptor list is reported instead of panicking
+        let db = get_test_db();
+        db.1.set(&String::from("desc"), &b"not a json".to_vec())
+            .unwrap();
+
+        let error = db.get_descriptors().unwrap_err();
+
+        assert!(matches!(error, KvDatabaseError::SerdeJsonError(_)));
+        assert!(error.to_string().starts_with("JSON error: "));
+    }
+
+    #[test]
+    fn test_kv_database_error_display() {
+        // errors coming from the kv store are wrapped as well
+        let error = KvDatabaseError::KvError(kv::Error::Message(String::from("boom")));
+
+        assert!(matches!(error, KvDatabaseError::KvError(_)));
+        assert!(error.to_string().starts_with("kv error: "));
+    }
+
+    #[test]
+    fn test_kv_database_error_into_watch_only_error() {
+        let db = get_test_db();
+        let error = db.get_cache_height().unwrap_err();
+        let message = error.to_string();
+
+        assert!(matches!(
+            WatchOnlyError::from(error),
+            WatchOnlyError::DatabaseError(inner) if inner == message
+        ));
     }
 }

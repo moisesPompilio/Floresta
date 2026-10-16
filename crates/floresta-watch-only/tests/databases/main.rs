@@ -2,7 +2,10 @@
 
 //! Every [`AddressCacheDatabase`] implementation is held to the same rules: each
 //! test below exercises one trait method at a time, against whichever database
-//! [`setup_test`] instantiates.
+//! [`setup_test`] instantiates. What's specific to the [`KvDatabase`] — that it
+//! persists to disk — lives in the [`kv_database`] submodule.
+
+mod kv_database;
 
 use core::str::FromStr;
 
