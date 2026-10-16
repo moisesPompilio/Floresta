@@ -137,23 +137,47 @@ impl Display for Error {
 impl_error_from!(Error, base58::Error, Base58);
 impl_error_from!(Error, bip32::Error, Bip32);
 
+/// A SLIP-132 public key prefix this wallet supports, already validated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slip132Prefix {
+    /// `xpub`: mainnet, P2PKH or P2SH
+    Xpub,
+
+    /// `ypub`: mainnet, P2WPKH nested in P2SH
+    Ypub,
+
+    /// `zpub`: mainnet, native P2WPKH
+    Zpub,
+
+    /// `tpub`: testnet and regtest, P2PKH or P2SH
+    Tpub,
+
+    /// `upub`: testnet and regtest, P2WPKH nested in P2SH
+    Upub,
+
+    /// `vpub`: testnet and regtest, native P2WPKH
+    Vpub,
+}
+
 /// Extracts the 4-byte prefix from the SLIP132-encoded string and validates it.
-fn extract_slip132_prefix(s: &str) -> Result<[u8; 4], Error> {
+fn extract_slip132_prefix(s: &str) -> Result<Slip132Prefix, Error> {
     let data = base58::decode_check(s)?;
     let mut prefix = [0u8; 4];
     prefix.copy_from_slice(&data[0..4]);
 
-    validate_slip132_prefix(prefix)?;
-
-    Ok(prefix)
+    validate_slip132_prefix(prefix)
 }
 
-/// Validates the SLIP132 prefix against known version magic values and returns appropriate errors
-/// for unsupported types.
-fn validate_slip132_prefix(prefix: [u8; 4]) -> Result<(), Error> {
+/// Validates the SLIP132 prefix against known version magic values, mapping it to the matching
+/// [`Slip132Prefix`], and returns appropriate errors for unsupported types.
+fn validate_slip132_prefix(prefix: [u8; 4]) -> Result<Slip132Prefix, Error> {
     match prefix {
-        VERSION_MAGIC_XPUB | VERSION_MAGIC_YPUB | VERSION_MAGIC_ZPUB | VERSION_MAGIC_TPUB
-        | VERSION_MAGIC_UPUB | VERSION_MAGIC_VPUB => Ok(()),
+        VERSION_MAGIC_XPUB => Ok(Slip132Prefix::Xpub),
+        VERSION_MAGIC_YPUB => Ok(Slip132Prefix::Ypub),
+        VERSION_MAGIC_ZPUB => Ok(Slip132Prefix::Zpub),
+        VERSION_MAGIC_TPUB => Ok(Slip132Prefix::Tpub),
+        VERSION_MAGIC_UPUB => Ok(Slip132Prefix::Upub),
+        VERSION_MAGIC_VPUB => Ok(Slip132Prefix::Vpub),
 
         VERSION_MAGIC_XPRV | VERSION_MAGIC_YPRV | VERSION_MAGIC_ZPRV | VERSION_MAGIC_TPRV
         | VERSION_MAGIC_UPRV | VERSION_MAGIC_VPRV => Err(Error::XprivUnsupported),
@@ -183,13 +207,11 @@ impl FromSlip132 for Xpub {
     fn from_slip132_str(s: &str) -> Result<Self, Error> {
         let mut data = base58::decode_check(s)?;
 
-        let prefix: [u8; 4] = extract_slip132_prefix(s)?;
+        let prefix: Slip132Prefix = extract_slip132_prefix(s)?;
         let bip44_prefix = match prefix {
-            VERSION_MAGIC_XPUB | VERSION_MAGIC_YPUB | VERSION_MAGIC_ZPUB => VERSION_MAGIC_XPUB,
+            Slip132Prefix::Xpub | Slip132Prefix::Ypub | Slip132Prefix::Zpub => VERSION_MAGIC_XPUB,
 
-            VERSION_MAGIC_TPUB | VERSION_MAGIC_UPUB | VERSION_MAGIC_VPUB => VERSION_MAGIC_TPUB,
-
-            _ => return Err(Error::UnknownSlip32Prefix),
+            Slip132Prefix::Tpub | Slip132Prefix::Upub | Slip132Prefix::Vpub => VERSION_MAGIC_TPUB,
         };
         data[0..4].copy_from_slice(&bip44_prefix);
 
@@ -211,11 +233,9 @@ pub(super) fn generate_descriptor_from_xpub(s: &str, internal: bool) -> Result<S
     let prefix = extract_slip132_prefix(s)?;
 
     match prefix {
-        VERSION_MAGIC_XPUB | VERSION_MAGIC_TPUB => Ok(format!("pkh({xpub}/{index}/*)")),
-        VERSION_MAGIC_YPUB | VERSION_MAGIC_UPUB => Ok(format!("sh(wpkh({xpub}/{index}/*))")),
-        VERSION_MAGIC_ZPUB | VERSION_MAGIC_VPUB => Ok(format!("wpkh({xpub}/{index}/*)")),
-
-        _ => Err(Error::UnknownSlip32Prefix),
+        Slip132Prefix::Xpub | Slip132Prefix::Tpub => Ok(format!("pkh({xpub}/{index}/*)")),
+        Slip132Prefix::Ypub | Slip132Prefix::Upub => Ok(format!("sh(wpkh({xpub}/{index}/*))")),
+        Slip132Prefix::Zpub | Slip132Prefix::Vpub => Ok(format!("wpkh({xpub}/{index}/*)")),
     }
 }
 
@@ -223,11 +243,9 @@ pub(super) fn generate_descriptor_from_xpub(s: &str, internal: bool) -> Result<S
 pub(super) fn is_xpub_mainnet(s: &str) -> Result<bool, Error> {
     let prefix = extract_slip132_prefix(s)?;
     match prefix {
-        VERSION_MAGIC_XPUB | VERSION_MAGIC_YPUB | VERSION_MAGIC_ZPUB => Ok(true),
+        Slip132Prefix::Xpub | Slip132Prefix::Ypub | Slip132Prefix::Zpub => Ok(true),
 
-        VERSION_MAGIC_TPUB | VERSION_MAGIC_UPUB | VERSION_MAGIC_VPUB => Ok(false),
-
-        _ => Err(Error::UnknownSlip32Prefix),
+        Slip132Prefix::Tpub | Slip132Prefix::Upub | Slip132Prefix::Vpub => Ok(false),
     }
 }
 
