@@ -153,10 +153,8 @@ impl AddressCacheDatabase for KvDatabase {
 
         descriptors.push(String::from(descriptor));
 
-        bucket.set(
-            &String::from("desc"),
-            &serde_json::to_vec(&descriptors).unwrap(),
-        )?;
+        let serialized = serde_json::to_vec(&descriptors)?;
+        bucket.set(&String::from("desc"), &serialized)?;
         bucket.flush()?;
 
         Ok(())
@@ -188,11 +186,9 @@ impl AddressCacheDatabase for KvDatabase {
         let tx_store = self.0.bucket::<&[u8], Vec<u8>>(Some("transactions"))?;
         let bucket = &self.1;
 
+        let txid = tx.tx.compute_txid().as_byte_array().to_vec();
         let serialized_tx = serde_json::to_vec(&tx)?;
-        tx_store.set(
-            &tx.tx.compute_txid().as_byte_array().to_vec().as_slice(),
-            &serialized_tx,
-        )?;
+        tx_store.set(&txid.as_slice(), &serialized_tx)?;
         bucket.flush()?;
 
         Ok(())
