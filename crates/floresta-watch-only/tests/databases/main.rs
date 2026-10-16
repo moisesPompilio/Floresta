@@ -154,11 +154,9 @@ fn test_fresh_database_is_empty() {
     assert!(database.get_descriptors().unwrap().is_empty());
     assert!(database.list_transactions().unwrap().is_empty());
 
-    // `get_stats` should report an uninitialized wallet, like `get_cache_height`
-    // does, but it reports a missing transaction instead
     assert!(matches!(
         database.get_stats(),
-        Err(KvDatabaseError::TransactionNotFound)
+        Err(KvDatabaseError::WalletNotInitialized)
     ));
     assert!(matches!(
         database.get_cache_height(),
