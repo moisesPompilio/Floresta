@@ -174,3 +174,119 @@ impl AddressCacheDatabase for MemoryDatabase {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod test {
+    use bitcoin::Txid;
+    use bitcoin::hashes::Hash;
+    use floresta_domain::wallet::error::WatchOnlyError;
+
+    use super::AddressCacheDatabase;
+    use super::CachedTransaction;
+    use super::MemoryDatabase;
+    use super::MemoryDatabaseError;
+    use super::Stats;
+
+    /// Builds a database whose lock was poisoned, by panicking while holding it
+    fn poisoned_database() -> MemoryDatabase {
+        let database = MemoryDatabase::new();
+
+        let poisoned = std::panic::catch_unwind(|| {
+            let _guard = database.inner.write().unwrap();
+            panic!("poisoning the lock on purpose");
+        });
+        assert!(poisoned.is_err());
+
+        database
+    }
+
+    fn get_test_cached_transaction() -> CachedTransaction {
+        CachedTransaction {
+            tx: bitcoin::Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: bitcoin::absolute::LockTime::ZERO,
+                input: Vec::new(),
+                output: Vec::new(),
+            },
+            hash: Txid::all_zeros(),
+            height: 0,
+            merkle_block: None,
+            position: 0,
+        }
+    }
+
+    #[test]
+    fn test_memory_database_error_display() {
+        let poisoned = MemoryDatabaseError::PoisonedLock.to_string();
+        let not_found = MemoryDatabaseError::TransactionNotFound.to_string();
+
+        assert!(poisoned.to_lowercase().contains("lock"));
+        assert!(not_found.to_lowercase().contains("not found"));
+        assert_ne!(poisoned, not_found);
+    }
+
+    #[test]
+    fn test_memory_database_error_into_watch_only_error() {
+        let error = MemoryDatabaseError::PoisonedLock;
+        let expected = error.to_string();
+
+        assert!(matches!(
+            WatchOnlyError::from(error),
+            WatchOnlyError::DatabaseError(message) if message == expected
+        ));
+    }
+
+    #[test]
+    fn test_poisoned_lock_every_method_reports_poisoned() {
+        // `save` and `update` are excluded: their trait signatures are infallible
+        // (return `()`) and panic on a poisoned lock by design.
+        let database = poisoned_database();
+        let transaction = get_test_cached_transaction();
+
+        // read path, through `get_inner`
+        assert!(matches!(
+            database.load(),
+            Err(MemoryDatabaseError::PoisonedLock)
+        ));
+        assert!(matches!(
+            database.get_cache_height(),
+            Err(MemoryDatabaseError::PoisonedLock)
+        ));
+        assert!(matches!(
+            database.get_descriptors(),
+            Err(MemoryDatabaseError::PoisonedLock)
+        ));
+        // the lock fails before any lookup, so this is `PoisonedLock` rather
+        // than the `TransactionNotFound` a healthy database would return.
+        assert!(matches!(
+            database.get_transaction(&Txid::all_zeros()),
+            Err(MemoryDatabaseError::PoisonedLock)
+        ));
+        assert!(matches!(
+            database.list_transactions(),
+            Err(MemoryDatabaseError::PoisonedLock)
+        ));
+        assert!(matches!(
+            database.get_stats(),
+            Err(MemoryDatabaseError::PoisonedLock)
+        ));
+
+        // write path, through `get_inner_mut`
+        assert!(matches!(
+            database.set_cache_height(1),
+            Err(MemoryDatabaseError::PoisonedLock)
+        ));
+        assert!(matches!(
+            database.save_descriptor("desc"),
+            Err(MemoryDatabaseError::PoisonedLock)
+        ));
+        assert!(matches!(
+            database.save_transaction(&transaction),
+            Err(MemoryDatabaseError::PoisonedLock)
+        ));
+        assert!(matches!(
+            database.save_stats(&Stats::default()),
+            Err(MemoryDatabaseError::PoisonedLock)
+        ));
+    }
+}
