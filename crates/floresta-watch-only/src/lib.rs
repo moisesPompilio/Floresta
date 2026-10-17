@@ -936,27 +936,37 @@ mod test {
         );
     }
 
-    #[test]
-    fn test_cache_transaction() {
-        // Signet transaction with id 6bb0665122c7dcecc6e6c45b6384ee2bdce148aea097896e6f3e9e08070353ea
-        // block hash 0000009298f9e75a91fa763c78b66d1555cb059d9ca9d45601eed2b95166a151.
-        let transaction = "020000000001017ca523c5e6df0c014e837279ab49be1676a9fe7571c3989aeba1e5d534f4054a0000000000fdffffff01d2410f00000000001600142b6a2924aa9b1b115d1ac3098b0ba0e6ed510f2a02473044022071b8583ba1f10531b68cb5bd269fb0e75714c20c5a8bce49d8a2307d27a082df022069a978dac00dd9d5761aa48c7acc881617fa4d2573476b11685596b17d437595012103b193d06bd0533d053f959b50e3132861527e5a7a49ad59c5e80a265ff6a77605eece0100";
-        let transaction = Vec::from_hex(transaction).unwrap();
-        let transaction = deserialize(&transaction).unwrap();
+    /// A signet transaction paying [`get_test_address`]'s address (txid [`PAYING_TXID`])
+    const PAYING_TX: &str = "020000000001017ca523c5e6df0c014e837279ab49be1676a9fe7571c3989aeba1e5d534f4054a0000000000fdffffff01d2410f00000000001600142b6a2924aa9b1b115d1ac3098b0ba0e6ed510f2a02473044022071b8583ba1f10531b68cb5bd269fb0e75714c20c5a8bce49d8a2307d27a082df022069a978dac00dd9d5761aa48c7acc881617fa4d2573476b11685596b17d437595012103b193d06bd0533d053f959b50e3132861527e5a7a49ad59c5e80a265ff6a77605eece0100";
 
-        let merkle_block = "0100000000000000ea530307089e3e6f6e8997a0ae48e1dc2bee84635bc4e6c6ecdcc7225166b06b010000000000000034086ef398efcdec47b37241221c8f4613e02bc31026cc74d07ddb3092e6d6e7";
-        let merkle_block = Vec::from_hex(merkle_block).unwrap();
-        let merkle_block = deserialize(&merkle_block).unwrap();
+    /// The txid of [`PAYING_TX`]
+    const PAYING_TXID: &str = "6bb0665122c7dcecc6e6c45b6384ee2bdce148aea097896e6f3e9e08070353ea";
 
+    /// The merkle proof of [`PAYING_TX`], in the block at height 118511
+    const PAYING_TX_MERKLE_PROOF: &str = "0100000000000000ea530307089e3e6f6e8997a0ae48e1dc2bee84635bc4e6c6ecdcc7225166b06b010000000000000034086ef398efcdec47b37241221c8f4613e02bc31026cc74d07ddb3092e6d6e7";
+
+    /// An unconfirmed transaction, spending some unrelated coin
+    const UNCONFIRMED_TX: &str = "01000000010b7e3ac7e68944dc7a7115362391c3b7975d60f4fbe4af0ca924a172bfe7a7d9000000006b483045022100e0ff6984e5c2e16df6f309b759b75e04adf6930593b6043cd9134f87efb7e07c02206544a9f265f6041f0e3e2bd11a95ea75a112d3dc05647a9b01eca0d352feeb380121024f9c3deb05e81a3ddb17dadcf283fb132894aa70ab127395a03a3e9d382f13a3ffffffff022c92ae00000000001976a914ca9755ffb8f0e5aeca43478d8620e1a35b3baada88acc0894601000000001976a914b62ad08a3ffc469e9c0df75d1ceca49a88345fc888ac00000000";
+
+    /// A multisig descriptor, as pushed by the descriptor tests
+    const TEST_DESCRIPTOR: &str = "wsh(sortedmulti(1,[54ff5a12/48h/1h/0h/2h]tpubDDw6pwZA3hYxcSN32q7a5ynsKmWr4BbkBNHydHPKkM4BZwUfiK7tQ26h7USm8kA1E2FvCy7f7Er7QXKF8RNptATywydARtzgrxuPDwyYv4x/<0;1>/*,[bcf969c0/48h/1h/0h/2h]tpubDEFdgZdCPgQBTNtGj4h6AehK79Jm4LH54JrYBJjAtHMLEAth7LuY87awx9ZMiCURFzFWhxToRJK6xp39aqeJWrG5nuW3eBnXeMJcvDeDxfp/<0;1>/*))#fuw35j0q";
+
+    /// A cache holding [`PAYING_TX`] as a transaction confirmed at height 118511
+    fn get_test_cache_with_paying_tx() -> (
+        AddressCache<MemoryDatabase>,
+        sha256::Hash,
+        bitcoin::Transaction,
+    ) {
         let (_, script_hash) = get_test_address();
         let cache = get_test_cache();
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
 
         cache
             .cache_transaction(
                 &transaction,
                 118511,
                 transaction.output[0].value.to_sat(),
-                merkle_block,
+                deserialize_from_str(PAYING_TX_MERKLE_PROOF),
                 1,
                 0,
                 false,
@@ -969,27 +979,47 @@ mod test {
             get_spk_hash(&transaction.output[0].script_pubkey)
         );
 
+        (cache, script_hash, transaction)
+    }
+
+    /// A cache following [`get_test_address`]'s address, with [`BLOCK_SPEND`] processed
+    fn get_test_cache_with_block() -> (AddressCache<MemoryDatabase>, sha256::Hash) {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        let block: bitcoin::Block = deserialize_from_str(BLOCK_SPEND);
+        cache.block_process(&block, 118511).unwrap();
+
+        (cache, script_hash)
+    }
+
+    #[test]
+    fn test_cache_transaction() {
+        let (cache, script_hash, transaction) = get_test_cache_with_paying_tx();
+
         let balance = cache.get_address_balance(&script_hash).unwrap();
         let history = cache.get_address_history(&script_hash).unwrap().unwrap();
         let cached_merkle_block = cache
             .get_merkle_proof(&transaction.compute_txid())
             .unwrap()
             .unwrap();
+
         assert_eq!(balance, Some(999890));
-        assert_eq!(
-            Ok(history[0].hash),
-            Txid::from_str("6bb0665122c7dcecc6e6c45b6384ee2bdce148aea097896e6f3e9e08070353ea")
-        );
-        let expected_hashes = Vec::from([String::from(
-            "e7d6e69230db7dd074cc2610c32be013468f1c224172b347eccdef98f36e0834",
-        )]);
-
+        assert_eq!(history[0].hash, Txid::from_str(PAYING_TXID).unwrap());
         assert_eq!(cached_merkle_block.pos, 1u64);
-        assert_eq!(cached_merkle_block.to_string_array(), expected_hashes);
+        assert_eq!(
+            cached_merkle_block.to_string_array(),
+            Vec::from([String::from(
+                "e7d6e69230db7dd074cc2610c32be013468f1c224172b347eccdef98f36e0834"
+            )])
+        );
+    }
 
-        // TESTS FOR SMALL, HELPER FUNCTIONS
+    #[test]
+    fn test_get_position() {
+        let (cache, _, transaction) = get_test_cache_with_paying_tx();
 
-        // [get_position]
         assert_eq!(
             cache
                 .get_position(&transaction.compute_txid())
@@ -997,8 +1027,12 @@ mod test {
                 .unwrap(),
             1
         );
+    }
 
-        // [get_height]
+    #[test]
+    fn test_get_height() {
+        let (cache, _, transaction) = get_test_cache_with_paying_tx();
+
         assert_eq!(
             cache
                 .get_height(&transaction.compute_txid())
@@ -1006,31 +1040,43 @@ mod test {
                 .unwrap(),
             118511
         );
+    }
 
-        // [get_cached_transaction]
-        assert!(
-            cache
-                .get_cached_transaction(&transaction.compute_txid())
-                .unwrap()
-                .is_some()
+    #[test]
+    fn test_get_cached_transaction() {
+        let (cache, _, transaction) = get_test_cache_with_paying_tx();
+
+        let cached = cache
+            .get_cached_transaction(&transaction.compute_txid())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            cached,
+            bitcoin::consensus::encode::serialize_hex(&transaction)
         );
+    }
 
-        // [get_address_utxos]
-        let tx_out = transaction.output[0].clone();
+    #[test]
+    fn test_get_address_utxos() {
+        let (cache, script_hash, transaction) = get_test_cache_with_paying_tx();
         let outpoint = OutPoint {
             txid: transaction.compute_txid(),
             vout: 0,
         };
+
         assert_eq!(
             cache.get_address_utxos(&script_hash).unwrap().unwrap(),
-            vec![(tx_out, outpoint)]
+            vec![(transaction.output[0].clone(), outpoint)]
         );
+    }
 
-        // [find_unconfirmed] Caching am unconfirmed transaction
-        let transaction = "01000000010b7e3ac7e68944dc7a7115362391c3b7975d60f4fbe4af0ca924a172bfe7a7d9000000006b483045022100e0ff6984e5c2e16df6f309b759b75e04adf6930593b6043cd9134f87efb7e07c02206544a9f265f6041f0e3e2bd11a95ea75a112d3dc05647a9b01eca0d352feeb380121024f9c3deb05e81a3ddb17dadcf283fb132894aa70ab127395a03a3e9d382f13a3ffffffff022c92ae00000000001976a914ca9755ffb8f0e5aeca43478d8620e1a35b3baada88acc0894601000000001976a914b62ad08a3ffc469e9c0df75d1ceca49a88345fc888ac00000000";
-        let transaction = Vec::from_hex(transaction).unwrap();
-        let transaction = deserialize(&transaction).unwrap();
+    #[test]
+    fn test_find_unconfirmed() {
+        let (cache, _, _) = get_test_cache_with_paying_tx();
 
+        // Caching an unconfirmed transaction
+        let transaction: bitcoin::Transaction = deserialize_from_str(UNCONFIRMED_TX);
         cache
             .cache_transaction(
                 &transaction,
@@ -1052,46 +1098,57 @@ mod test {
 
     #[test]
     fn test_process_block() {
-        let (address, script_hash) = get_test_address();
-        let cache = get_test_cache();
-        cache.cache_address(address.script_pubkey()).unwrap();
-
-        let block = "000000203ea734fa2c8dee7d3194878c9eaf6e83a629f79b3076ec857793995e01010000eb99c679c0305a1ac0f5eb2a07a9f080616105e605b92b8c06129a2451899225ab5481633c4b011e0b26720102020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0403efce01feffffff026ef2052a01000000225120a1a1b1376d5165617a50a6d2f59abc984ead8a92df2b25f94b53dbc2151824730000000000000000776a24aa21a9ed1b4c48a7220572ff3ab3d2d1c9231854cb62542fbb1e0a4b21ebbbcde8d652bc4c4fecc7daa2490047304402204b37c41fce11918df010cea4151737868111575df07f7f2945d372e32a6d11dd02201658873a8228d7982df6bdbfff5d0cad1d6f07ee400e2179e8eaad8d115b7ed001000120000000000000000000000000000000000000000000000000000000000000000000000000020000000001017ca523c5e6df0c014e837279ab49be1676a9fe7571c3989aeba1e5d534f4054a0000000000fdffffff01d2410f00000000001600142b6a2924aa9b1b115d1ac3098b0ba0e6ed510f2a02473044022071b8583ba1f10531b68cb5bd269fb0e75714c20c5a8bce49d8a2307d27a082df022069a978dac00dd9d5761aa48c7acc881617fa4d2573476b11685596b17d437595012103b193d06bd0533d053f959b50e3132861527e5a7a49ad59c5e80a265ff6a77605eece0100";
-        let block = deserialize(&Vec::from_hex(block).unwrap()).unwrap();
-        cache.block_process(&block, 118511).unwrap();
+        let (cache, script_hash) = get_test_cache_with_block();
 
         let balance = cache.get_address_balance(&script_hash).unwrap();
         let history = cache.get_address_history(&script_hash).unwrap().unwrap();
-        let transaction_id =
-            Txid::from_str("6bb0665122c7dcecc6e6c45b6384ee2bdce148aea097896e6f3e9e08070353ea")
-                .unwrap();
+        let transaction_id = Txid::from_str(PAYING_TXID).unwrap();
         let cached_merkle_block = cache.get_merkle_proof(&transaction_id).unwrap().unwrap();
+
         assert_eq!(balance, Some(999890));
-        assert_eq!(
-            history[0].hash,
-            Txid::from_str("6bb0665122c7dcecc6e6c45b6384ee2bdce148aea097896e6f3e9e08070353ea")
-                .unwrap()
-        );
-        let expected_hashes = Vec::from([String::from(
-            "e7d6e69230db7dd074cc2610c32be013468f1c224172b347eccdef98f36e0834",
-        )]);
-
+        assert_eq!(history[0].hash, transaction_id);
         assert_eq!(cached_merkle_block.pos, 1u64);
-        assert_eq!(cached_merkle_block.to_string_array(), expected_hashes);
+        assert_eq!(
+            cached_merkle_block.to_string_array(),
+            Vec::from([String::from(
+                "e7d6e69230db7dd074cc2610c32be013468f1c224172b347eccdef98f36e0834"
+            )])
+        );
+    }
 
-        // TESTS FOR SMALL HELPER FUNCTIONS
+    #[test]
+    fn test_bump_height() {
+        let (cache, _) = get_test_cache_with_block();
 
-        // [bump_height], [get_cache_height], [set_cache_height]
         cache.bump_height(118511).unwrap();
+
         assert_eq!(cache.get_cache_height().unwrap(), 118511);
+    }
 
-        // [is_cached], [push_descriptor]
-        let desc = "wsh(sortedmulti(1,[54ff5a12/48h/1h/0h/2h]tpubDDw6pwZA3hYxcSN32q7a5ynsKmWr4BbkBNHydHPKkM4BZwUfiK7tQ26h7USm8kA1E2FvCy7f7Er7QXKF8RNptATywydARtzgrxuPDwyYv4x/<0;1>/*,[bcf969c0/48h/1h/0h/2h]tpubDEFdgZdCPgQBTNtGj4h6AehK79Jm4LH54JrYBJjAtHMLEAth7LuY87awx9ZMiCURFzFWhxToRJK6xp39aqeJWrG5nuW3eBnXeMJcvDeDxfp/<0;1>/*))#fuw35j0q";
-        cache.push_descriptor(desc).unwrap();
-        assert!(cache.is_cached(desc).unwrap());
+    #[test]
+    fn test_push_descriptor() {
+        let (cache, _) = get_test_cache_with_block();
 
-        // [derive_addresses]
+        cache.push_descriptor(TEST_DESCRIPTOR).unwrap();
+
+        assert_eq!(cache.get_descriptors().unwrap(), vec![TEST_DESCRIPTOR]);
+    }
+
+    #[test]
+    fn test_is_cached() {
+        let (cache, _) = get_test_cache_with_block();
+
+        cache.push_descriptor(TEST_DESCRIPTOR).unwrap();
+
+        assert!(cache.is_cached(TEST_DESCRIPTOR).unwrap());
+    }
+
+    #[test]
+    fn test_derive_addresses() {
+        let (cache, _) = get_test_cache_with_block();
+
         cache.derive_addresses().unwrap();
+
         assert_eq!(
             cache.get_stats().unwrap().derivation_index,
             DERIVATION_COUNT
