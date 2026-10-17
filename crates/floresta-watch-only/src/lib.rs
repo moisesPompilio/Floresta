@@ -32,12 +32,12 @@ use bitcoin::Block;
 use bitcoin::OutPoint;
 use bitcoin::Transaction;
 use bitcoin::TxOut;
-use bitcoin::consensus::deserialize;
+use bitcoin::absolute::LockTime;
 use bitcoin::consensus::encode::serialize_hex;
 use bitcoin::hash_types::Txid;
 use bitcoin::hashes::Hash as HashTrait;
-use bitcoin::hashes::hex::FromHex;
 use bitcoin::hashes::sha256::Hash;
+use bitcoin::transaction::Version;
 use floresta_common::prelude::*;
 use floresta_domain::wallet::error::WatchOnlyError;
 use merkle::MerkleProof;
@@ -94,7 +94,12 @@ impl Default for CachedTransaction {
         Self {
             // A placeholder transaction with no input and no outputs, the bare-minimum to be
             // serializable
-            tx: deserialize(&Vec::from_hex("010000000000ffffffff").unwrap()).unwrap(),
+            tx: Transaction {
+                version: Version::ONE,
+                lock_time: LockTime::ZERO,
+                input: Vec::new(),
+                output: Vec::new(),
+            },
             height: 0,
             merkle_block: None,
             hash: Txid::all_zeros(),
@@ -871,26 +876,40 @@ where
 
 #[cfg(test)]
 mod test {
+    use core::cell::RefCell;
     use core::str::FromStr;
 
     use bitcoin::Address;
+    use bitcoin::Amount;
+    use bitcoin::Network;
     use bitcoin::OutPoint;
     use bitcoin::ScriptBuf;
+    use bitcoin::TxIn;
+    use bitcoin::TxOut;
     use bitcoin::Txid;
+    use bitcoin::absolute::LockTime;
     use bitcoin::address::NetworkChecked;
     use bitcoin::consensus::Decodable;
     use bitcoin::consensus::deserialize;
     use bitcoin::hashes::Hash;
     use bitcoin::hashes::hex::FromHex;
     use bitcoin::hashes::sha256;
+    use bitcoin::transaction::Version;
+    use floresta_chain::BlockConsumer;
     use floresta_chain::pruned_utreexo::merkle::ConsensusMerkle;
     use floresta_common::get_spk_hash;
     use floresta_common::prelude::*;
+    use floresta_domain::wallet::error::WatchOnlyError;
 
     use super::AddressCache;
+    use super::AddressCacheDatabase;
+    use super::CachedAddress;
     use super::CachedTransaction;
+    use super::Stats;
     use super::memory_database::MemoryDatabase;
+    use super::memory_database::MemoryDatabaseError;
     use crate::DERIVATION_COUNT;
+    use crate::kv_database::KvDatabase;
     use crate::merkle::MerkleProof;
 
     const BLOCK_FIRST_UTXO: &str = "00000020b4f594a390823c53557c5a449fa12413cbbae02be529c11c4eb320ff8e000000dd1211eb35ca09dc0ee519b0f79319fae6ed32c66f8bbf353c38513e2132c435474d81633c4b011e195a220002010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0403edce01feffffff028df2052a0100000016001481113cad52683679a83e76f76f84a4cfe36f75010000000000000000776a24aa21a9ed67863b4f356b7b9f3aab7a2037615989ef844a0917fb0a1dcd6c23a383ee346b4c4fecc7daa2490047304402203768ff10a948a2dd1825cc5a3b0d336d819ea68b5711add1390b290bf3b1cba202201d15e73791b2df4c0904fc3f7c7b2f22ab77762958e9bc76c625138ad3a04d290100012000000000000000000000000000000000000000000000000000000000000000000000000002000000000101be07b18750559a418d144f1530be380aa5f28a68a0269d6b2d0e6ff3ff25f3200000000000feffffff0240420f00000000001600142b6a2924aa9b1b115d1ac3098b0ba0e6ed510f2a326f55d94c060000160014c2ed86a626ee74d854a12c9bb6a9b72a80c0ddc50247304402204c47f6783800831bd2c75f44d8430bf4d962175349dc04d690a617de6c1eaed502200ffe70188a6e5ad89871b2acb4d0f732c2256c7ed641d2934c6e84069c792abc012103ba174d9c66078cf813d0ac54f5b19b5fe75104596bdd6c1731d9436ad8776f41ecce0100";
@@ -912,6 +931,193 @@ mod test {
             .assume_checked();
         let script_hash = get_spk_hash(&address.script_pubkey());
         (address, script_hash)
+    }
+
+    /// A tpub and the descriptors it expands to, as in the descriptor test cases
+    const TEST_TPUB: &str = "tpubDC73PMTHeKDXnFwNFz8CLBy2VVx4D85WW2vbzwVLwCD9zkQ6Vj97muhLRTbKvmue1PyVQLwizvBW6v2SD1LnzbeuHnRsDYQZGE8urTZHMn5";
+    const TEST_TPUB_MAIN_DESCRIPTOR: &str = "pkh(tpubDC73PMTHeKDXnFwNFz8CLBy2VVx4D85WW2vbzwVLwCD9zkQ6Vj97muhLRTbKvmue1PyVQLwizvBW6v2SD1LnzbeuHnRsDYQZGE8urTZHMn5/0/*)#8zp7ryrl";
+    const TEST_TPUB_CHANGE_DESCRIPTOR: &str = "pkh(tpubDC73PMTHeKDXnFwNFz8CLBy2VVx4D85WW2vbzwVLwCD9zkQ6Vj97muhLRTbKvmue1PyVQLwizvBW6v2SD1LnzbeuHnRsDYQZGE8urTZHMn5/1/*)#kkyl73n8";
+
+    /// A unique datadir under the gitignored `tmp-db`, as the kv database tests use
+    fn get_test_datadir() -> String {
+        format!("./tmp-db/watch-only-{}.floresta/", rand::random::<u32>())
+    }
+
+    /// Builds a transaction spending `utxo` and paying `amount` back to `address`
+    fn build_spend(
+        utxo: OutPoint,
+        amount: u64,
+        address: &Address<NetworkChecked>,
+    ) -> bitcoin::Transaction {
+        bitcoin::Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: utxo,
+                ..Default::default()
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(amount),
+                script_pubkey: address.script_pubkey(),
+            }],
+        }
+    }
+
+    /// Poisons [`AddressCache`]'s inner lock, by panicking while holding it
+    fn poison_lock(cache: &AddressCache<MemoryDatabase>) {
+        // the panic hook is silenced because we're panicking on purpose
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = cache.inner.write().unwrap();
+            panic!("poisoning the lock on purpose");
+        }));
+        std::panic::set_hook(hook);
+        assert!(poisoned.is_err());
+    }
+
+    /// The database operations a [`FailingDatabase`] can be told to fail
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum FailingOperation {
+        GetStats,
+        SaveStats,
+        GetCacheHeight,
+        SetCacheHeight,
+        GetDescriptors,
+        SaveDescriptor,
+        GetTransaction,
+        ListTransactions,
+    }
+
+    /// A [`MemoryDatabase`] that fails the operations it was told to, so the error
+    /// handling of [`AddressCache`] can be exercised
+    struct FailingDatabase {
+        inner: MemoryDatabase,
+        failing: RefCell<Vec<FailingOperation>>,
+    }
+
+    impl FailingDatabase {
+        fn new() -> Self {
+            Self {
+                inner: MemoryDatabase::new(),
+                failing: RefCell::new(Vec::new()),
+            }
+        }
+
+        /// Makes the given operations fail from now on
+        fn fail(&self, operations: impl IntoIterator<Item = FailingOperation>) {
+            self.failing.replace(operations.into_iter().collect());
+        }
+
+        /// Runs `operation` over the inner database, unless it was told to fail
+        fn fail_unless(&self, operation: FailingOperation) -> Result<(), MemoryDatabaseError> {
+            if self.failing.borrow().contains(&operation) {
+                return Err(MemoryDatabaseError::PoisonedLock);
+            }
+
+            Ok(())
+        }
+    }
+
+    impl AddressCacheDatabase for FailingDatabase {
+        type Error = MemoryDatabaseError;
+
+        fn save(&self, address: &CachedAddress) {
+            self.inner.save(address);
+        }
+
+        fn load(&self) -> Result<Vec<CachedAddress>, Self::Error> {
+            self.inner.load()
+        }
+
+        fn get_stats(&self) -> Result<Stats, Self::Error> {
+            self.fail_unless(FailingOperation::GetStats)?;
+            self.inner.get_stats()
+        }
+
+        fn save_stats(&self, stats: &Stats) -> Result<(), Self::Error> {
+            self.fail_unless(FailingOperation::SaveStats)?;
+            self.inner.save_stats(stats)
+        }
+
+        fn update(&self, address: &CachedAddress) {
+            self.inner.update(address);
+        }
+
+        fn get_cache_height(&self) -> Result<u32, Self::Error> {
+            self.fail_unless(FailingOperation::GetCacheHeight)?;
+            self.inner.get_cache_height()
+        }
+
+        fn set_cache_height(&self, height: u32) -> Result<(), Self::Error> {
+            self.fail_unless(FailingOperation::SetCacheHeight)?;
+            self.inner.set_cache_height(height)
+        }
+
+        fn save_descriptor(&self, descriptor: &str) -> Result<(), Self::Error> {
+            self.fail_unless(FailingOperation::SaveDescriptor)?;
+            self.inner.save_descriptor(descriptor)
+        }
+
+        fn get_descriptors(&self) -> Result<Vec<String>, Self::Error> {
+            self.fail_unless(FailingOperation::GetDescriptors)?;
+            self.inner.get_descriptors()
+        }
+
+        fn get_transaction(&self, txid: &Txid) -> Result<CachedTransaction, Self::Error> {
+            self.fail_unless(FailingOperation::GetTransaction)?;
+            self.inner.get_transaction(txid)
+        }
+
+        fn save_transaction(&self, tx: &CachedTransaction) -> Result<(), Self::Error> {
+            self.inner.save_transaction(tx)
+        }
+
+        fn list_transactions(&self) -> Result<Vec<Txid>, Self::Error> {
+            self.fail_unless(FailingOperation::ListTransactions)?;
+            self.inner.list_transactions()
+        }
+    }
+
+    /// A cache whose inner lock was poisoned, so every operation reports an internal error
+    fn poisoned_cache() -> AddressCache<MemoryDatabase> {
+        let cache = get_test_cache();
+        poison_lock(&cache);
+
+        cache
+    }
+
+    /// An address the test caches don't follow
+    fn get_untracked_address() -> (Address<NetworkChecked>, sha256::Hash) {
+        let address = Address::from_str("tb1q7e5q2y0mpvesst3jxhe45q0e2q9gdkfd6zxzqa")
+            .unwrap()
+            .assume_checked();
+        let script_hash = get_spk_hash(&address.script_pubkey());
+
+        (address, script_hash)
+    }
+
+    /// Makes the cache's database fail the given operations
+    fn fail_database(
+        cache: &AddressCache<FailingDatabase>,
+        operations: impl IntoIterator<Item = FailingOperation>,
+    ) {
+        cache.inner.write().unwrap().database.fail(operations);
+    }
+
+    /// A cache whose database fails the given operations
+    fn failing_cache(
+        operations: impl IntoIterator<Item = FailingOperation>,
+    ) -> AddressCache<FailingDatabase> {
+        let cache = AddressCache::new(FailingDatabase::new(), ConsensusMerkle);
+        fail_database(&cache, operations);
+
+        cache
+    }
+
+    /// Asserts that the error came from the database
+    fn assert_database_error(error: WatchOnlyError) {
+        assert!(matches!(error, WatchOnlyError::DatabaseError(_)));
     }
 
     #[test]
@@ -1251,5 +1457,1127 @@ mod test {
             history,
             vec![(2, tx_a.compute_txid()), (5, tx_b.compute_txid())]
         );
+    }
+    #[test]
+    fn test_cached_transaction_default() {
+        let cached = CachedTransaction::default();
+
+        assert_eq!(cached.height, 0);
+        assert_eq!(cached.position, 0);
+        assert_eq!(cached.hash, Txid::all_zeros());
+        assert!(cached.merkle_block.is_none());
+        // the placeholder transaction is the bare minimum to be serializable
+        assert!(cached.tx.input.is_empty());
+        assert!(cached.tx.output.is_empty());
+    }
+
+    #[test]
+    fn test_is_address_cached() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+
+        assert!(!cache.is_address_cached(&script_hash).unwrap());
+
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        assert!(cache.is_address_cached(&script_hash).unwrap());
+    }
+
+    #[test]
+    fn test_get_cached_addresses() {
+        let (address, _) = get_test_address();
+        let cache = get_test_cache();
+
+        assert!(cache.get_cached_addresses().unwrap().is_empty());
+
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        assert_eq!(
+            cache.get_cached_addresses().unwrap(),
+            vec![address.script_pubkey()]
+        );
+    }
+
+    #[test]
+    fn test_get_utxo() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        // An outpoint we don't track at all
+        let unknown = OutPoint {
+            txid: Txid::all_zeros(),
+            vout: 0,
+        };
+        assert!(cache.get_utxo(&unknown).unwrap().is_none());
+
+        // An outpoint our index knows about, but whose transaction was never saved:
+        // we can't resolve its value, so it's reported as spent
+        cache
+            .inner
+            .write()
+            .unwrap()
+            .utxo_index
+            .insert(unknown, script_hash);
+        assert!(cache.get_utxo(&unknown).unwrap().is_none());
+
+        // An outpoint backing a transaction we cached resolves to its output
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        cache
+            .cache_transaction(
+                &transaction,
+                118511,
+                transaction.output[0].value.to_sat(),
+                MerkleProof::default(),
+                1,
+                0,
+                false,
+                script_hash,
+            )
+            .unwrap();
+
+        let utxo = OutPoint {
+            txid: transaction.compute_txid(),
+            vout: 0,
+        };
+        assert_eq!(
+            cache.get_utxo(&utxo).unwrap().unwrap().value.to_sat(),
+            999_890
+        );
+    }
+
+    #[test]
+    fn test_get_transaction() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        cache
+            .cache_transaction(
+                &transaction,
+                118511,
+                transaction.output[0].value.to_sat(),
+                MerkleProof::default(),
+                1,
+                0,
+                false,
+                script_hash,
+            )
+            .unwrap();
+
+        let cached = cache
+            .get_transaction(&Txid::from_str(PAYING_TXID).unwrap())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cached.height, 118511);
+        assert_eq!(cached.position, 1);
+        assert!(cache.get_transaction(&Txid::all_zeros()).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_push_xpub() {
+        let cache = get_test_cache();
+
+        cache.push_xpub(TEST_TPUB, Network::Testnet).unwrap();
+
+        assert_eq!(
+            cache.get_descriptors().unwrap(),
+            vec![TEST_TPUB_MAIN_DESCRIPTOR, TEST_TPUB_CHANGE_DESCRIPTOR]
+        );
+        assert!(cache.is_cached(TEST_TPUB_MAIN_DESCRIPTOR).unwrap());
+        assert!(cache.is_cached(TEST_TPUB_CHANGE_DESCRIPTOR).unwrap());
+        // both the external and the change descriptors derive a window of addresses
+        assert_eq!(
+            cache.n_cached_addresses().unwrap(),
+            2 * DERIVATION_COUNT as usize
+        );
+
+        // Pushing the same xpub a second time is rejected
+        let error = cache.push_xpub(TEST_TPUB, Network::Testnet).unwrap_err();
+        assert!(matches!(error, WatchOnlyError::DuplicateDescriptor { .. }));
+
+        // So is an xpub that doesn't belong to the network we're operating on
+        let error = cache.push_xpub(TEST_TPUB, Network::Bitcoin).unwrap_err();
+        assert!(matches!(error, WatchOnlyError::InvalidDescriptor(_)));
+    }
+
+    #[test]
+    fn test_derive_addresses_invalid_descriptor_error() {
+        let cache = get_test_cache();
+        // A descriptor that can't be parsed is stored directly into the database
+        cache
+            .inner
+            .read()
+            .unwrap()
+            .database
+            .save_descriptor("not a descriptor")
+            .unwrap();
+
+        let error = cache.derive_addresses().unwrap_err();
+
+        assert!(matches!(error, WatchOnlyError::InvalidDescriptor(_)));
+        // Nothing was cached, so the derivation index is left untouched
+        assert_eq!(cache.get_stats().unwrap().derivation_index, 0);
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_maybe_derive_addresses() {
+        let cache = get_test_cache();
+
+        // A fresh wallet has nothing to derive
+        cache.maybe_derive_addresses().unwrap();
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+
+        cache.push_descriptor(TEST_TPUB_MAIN_DESCRIPTOR).unwrap();
+        assert_eq!(
+            cache.n_cached_addresses().unwrap(),
+            DERIVATION_COUNT as usize
+        );
+
+        // The wallet got more transactions than the current derivation window covers,
+        // so a new batch of addresses is derived
+        let stats = Stats {
+            transaction_count: DERIVATION_COUNT as usize + 1,
+            ..Default::default()
+        };
+        cache
+            .inner
+            .read()
+            .unwrap()
+            .database
+            .save_stats(&stats)
+            .unwrap();
+
+        cache.maybe_derive_addresses().unwrap();
+
+        // The window was derived again from index zero, so the address count doesn't
+        // change, but the derivation index moves forward
+        assert_eq!(
+            cache.get_stats().unwrap().derivation_index,
+            DERIVATION_COUNT
+        );
+        assert_eq!(
+            cache.n_cached_addresses().unwrap(),
+            DERIVATION_COUNT as usize
+        );
+    }
+
+    #[test]
+    fn test_maybe_derive_addresses_derivation_error() {
+        let cache = get_test_cache();
+        cache
+            .inner
+            .read()
+            .unwrap()
+            .database
+            .save_descriptor("not a descriptor")
+            .unwrap();
+        let stats = Stats {
+            transaction_count: 1,
+            ..Default::default()
+        };
+        cache
+            .inner
+            .read()
+            .unwrap()
+            .database
+            .save_stats(&stats)
+            .unwrap();
+
+        // Derivation fails, but the error is logged rather than propagated
+        cache.maybe_derive_addresses().unwrap();
+
+        assert_eq!(cache.get_stats().unwrap().derivation_index, 0);
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_cache_mempool_transaction() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        // A confirmed transaction paying the tracked address, so it owns an utxo
+        let confirmed: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        cache
+            .cache_transaction(
+                &confirmed,
+                118511,
+                confirmed.output[0].value.to_sat(),
+                MerkleProof::default(),
+                1,
+                0,
+                false,
+                script_hash,
+            )
+            .unwrap();
+
+        // An unconfirmed transaction spending that utxo and paying the address again
+        let utxo = OutPoint {
+            txid: confirmed.compute_txid(),
+            vout: 0,
+        };
+        let spend = build_spend(utxo, 1_000, &address);
+
+        let coins = cache.cache_mempool_transaction(&spend).unwrap();
+
+        // The spent utxo and the new payment are both reported back to the caller
+        assert_eq!(coins.len(), 2);
+        assert_eq!(coins[0].value.to_sat(), 999_890);
+        assert_eq!(coins[1].value.to_sat(), 1_000);
+
+        // Both the confirmed and the mempool transaction are in the address history
+        let history = cache.get_address_history(&script_hash).unwrap().unwrap();
+        assert_eq!(history.len(), 2);
+        assert!(
+            history
+                .iter()
+                .any(|tx| tx.hash == spend.compute_txid() && tx.height == 0)
+        );
+
+        let unconfirmed = cache.find_unconfirmed().unwrap();
+        assert_eq!(unconfirmed.len(), 1);
+        assert_eq!(unconfirmed[0].compute_txid(), spend.compute_txid());
+
+        // Caching the same mempool transaction again doesn't duplicate its history entry
+        cache.cache_mempool_transaction(&spend).unwrap();
+        let history = cache.get_address_history(&script_hash).unwrap().unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .filter(|tx| tx.hash == spend.compute_txid())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_save_non_mempool_tx() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        let cached = CachedTransaction {
+            tx: transaction.clone(),
+            height: 118511,
+            merkle_block: None,
+            hash: transaction.compute_txid(),
+            position: 1,
+        };
+
+        // A transaction creating an utxo for the address
+        cache
+            .save_non_mempool_tx(
+                &transaction,
+                false,
+                transaction.output[0].value.to_sat(),
+                0,
+                script_hash,
+                cached,
+            )
+            .unwrap();
+        assert_eq!(
+            cache.get_address_balance(&script_hash).unwrap(),
+            Some(999_890)
+        );
+
+        // A transaction spending that utxo
+        let utxo = OutPoint {
+            txid: transaction.compute_txid(),
+            vout: 0,
+        };
+        let spend = build_spend(utxo, 999_000, &address);
+        let cached_spend = CachedTransaction {
+            tx: spend.clone(),
+            height: 118512,
+            merkle_block: None,
+            hash: spend.compute_txid(),
+            position: 0,
+        };
+
+        cache
+            .save_non_mempool_tx(&spend, true, 999_890, 0, script_hash, cached_spend)
+            .unwrap();
+
+        assert_eq!(cache.get_address_balance(&script_hash).unwrap(), Some(0));
+    }
+
+    #[test]
+    fn test_n_cached_addresses_poisoned_lock_error() {
+        let cache = poisoned_cache();
+
+        assert!(matches!(
+            cache.n_cached_addresses().unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_cache_address_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let (address, _) = get_test_address();
+
+        assert!(matches!(
+            cache.cache_address(address.script_pubkey()).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_get_utxo_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let outpoint = OutPoint {
+            txid: Txid::all_zeros(),
+            vout: 0,
+        };
+
+        assert!(matches!(
+            cache.get_utxo(&outpoint).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_get_address_balance_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let (_, script_hash) = get_test_address();
+
+        assert!(matches!(
+            cache.get_address_balance(&script_hash).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_get_cached_addresses_poisoned_lock_error() {
+        let cache = poisoned_cache();
+
+        assert!(matches!(
+            cache.get_cached_addresses().unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_bump_height_poisoned_lock_error() {
+        let cache = poisoned_cache();
+
+        assert!(matches!(
+            cache.bump_height(1).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_get_cache_height_poisoned_lock_error() {
+        let cache = poisoned_cache();
+
+        assert!(matches!(
+            cache.get_cache_height().unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_is_cached_poisoned_lock_error() {
+        let cache = poisoned_cache();
+
+        assert!(matches!(
+            cache.is_cached(TEST_TPUB_MAIN_DESCRIPTOR).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_is_address_cached_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let (_, script_hash) = get_test_address();
+
+        assert!(matches!(
+            cache.is_address_cached(&script_hash).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_push_descriptor_poisoned_lock_error() {
+        let cache = poisoned_cache();
+
+        assert!(matches!(
+            cache
+                .push_descriptor(TEST_TPUB_MAIN_DESCRIPTOR)
+                .unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_push_xpub_poisoned_lock_error() {
+        let cache = poisoned_cache();
+
+        assert!(matches!(
+            cache.push_xpub(TEST_TPUB, Network::Testnet).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_get_position_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let txid = Txid::all_zeros();
+
+        assert!(matches!(
+            cache.get_position(&txid).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_get_height_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let txid = Txid::all_zeros();
+
+        assert!(matches!(
+            cache.get_height(&txid).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_get_cached_transaction_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let txid = Txid::all_zeros();
+
+        assert!(matches!(
+            cache.get_cached_transaction(&txid).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_setup_poisoned_lock_error() {
+        let cache = poisoned_cache();
+
+        assert!(matches!(
+            cache.setup().unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_block_process_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let block: bitcoin::Block = deserialize_from_str(BLOCK_SPEND);
+
+        assert!(matches!(
+            cache.block_process(&block, 118511).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_get_address_utxos_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let (_, script_hash) = get_test_address();
+
+        assert!(matches!(
+            cache.get_address_utxos(&script_hash).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_get_transaction_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let txid = Txid::all_zeros();
+
+        assert!(matches!(
+            cache.get_transaction(&txid).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_get_address_history_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let (_, script_hash) = get_test_address();
+
+        assert!(matches!(
+            cache.get_address_history(&script_hash).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_get_merkle_proof_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let txid = Txid::all_zeros();
+
+        assert!(matches!(
+            cache.get_merkle_proof(&txid).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_derive_addresses_poisoned_lock_error() {
+        let cache = poisoned_cache();
+
+        assert!(matches!(
+            cache.derive_addresses().unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_get_stats_poisoned_lock_error() {
+        let cache = poisoned_cache();
+
+        assert!(matches!(
+            cache.get_stats().unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_maybe_derive_addresses_poisoned_lock_error() {
+        let cache = poisoned_cache();
+
+        assert!(matches!(
+            cache.maybe_derive_addresses().unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_find_unconfirmed_poisoned_lock_error() {
+        let cache = poisoned_cache();
+
+        assert!(matches!(
+            cache.find_unconfirmed().unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_cache_mempool_transaction_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+
+        assert!(matches!(
+            cache.cache_mempool_transaction(&transaction).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_save_mempool_tx_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let (_, script_hash) = get_test_address();
+
+        assert!(matches!(
+            cache
+                .save_mempool_tx(script_hash, CachedTransaction::default())
+                .unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_save_non_mempool_tx_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let (_, script_hash) = get_test_address();
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+
+        assert!(matches!(
+            cache
+                .save_non_mempool_tx(
+                    &transaction,
+                    false,
+                    0,
+                    0,
+                    script_hash,
+                    CachedTransaction::default()
+                )
+                .unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_get_descriptors_poisoned_lock_error() {
+        let cache = poisoned_cache();
+
+        assert!(matches!(
+            cache.get_descriptors().unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_cache_transaction_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let (_, script_hash) = get_test_address();
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+
+        assert!(matches!(
+            cache
+                .cache_transaction(
+                    &transaction,
+                    0,
+                    0,
+                    MerkleProof::default(),
+                    0,
+                    0,
+                    false,
+                    script_hash
+                )
+                .unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_wants_spent_utxos() {
+        let cache = get_test_cache();
+
+        assert!(!BlockConsumer::wants_spent_utxos(&cache));
+    }
+
+    #[test]
+    fn test_on_block_logs_block_process_error() {
+        let cache = poisoned_cache();
+        let block: bitcoin::Block = deserialize_from_str(BLOCK_SPEND);
+
+        // The error is logged instead of returned, so the consumer keeps going
+        BlockConsumer::on_block(&cache, &block, 118511, None);
+    }
+
+    #[test]
+    fn test_new_default() {
+        let datadir = get_test_datadir();
+        let cache = AddressCache::new_default(&datadir, ConsensusMerkle).unwrap();
+
+        // A wallet that was just initialized follows no address yet
+        assert!(cache.get_descriptors().unwrap().is_empty());
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+
+        std::fs::remove_dir_all(&datadir).unwrap();
+    }
+
+    #[test]
+    fn test_setup() {
+        let datadir = get_test_datadir();
+        let cache = AddressCache::new_default(&datadir, ConsensusMerkle).unwrap();
+
+        cache.setup().unwrap();
+
+        // A wallet that was just initialized scans from the genesis block
+        assert_eq!(cache.get_cache_height().unwrap(), 0);
+
+        std::fs::remove_dir_all(&datadir).unwrap();
+    }
+
+    #[test]
+    fn test_setup_corrupted_descriptor_list_error() {
+        let datadir = get_test_datadir();
+        {
+            // A descriptor list that can't be deserialized makes `get_descriptors` fail
+            let store = kv::Store::new(kv::Config::new(&datadir)).unwrap();
+            let bucket = store.bucket::<String, Vec<u8>>(Some("addresses")).unwrap();
+            bucket
+                .set(&String::from("desc"), &b"not a json".to_vec())
+                .unwrap();
+            bucket.flush().unwrap();
+        }
+
+        let cache = AddressCache::new(KvDatabase::new(&datadir).unwrap(), ConsensusMerkle);
+        // The wallet can't read its descriptors, so it is reset to the genesis block
+        cache.setup().unwrap();
+
+        assert_eq!(cache.get_cache_height().unwrap(), 0);
+
+        std::fs::remove_dir_all(&datadir).unwrap();
+    }
+
+    #[test]
+    fn test_save_mempool_tx() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        // Saving a mempool transaction for a tracked address adds it to its history
+        cache
+            .save_mempool_tx(script_hash, CachedTransaction::default())
+            .unwrap();
+
+        let cached = cache.inner.read().unwrap();
+        assert_eq!(
+            cached.address_map.get(&script_hash).unwrap().transactions,
+            vec![Txid::all_zeros()]
+        );
+    }
+
+    #[test]
+    fn test_save_mempool_tx_untracked_address() {
+        let (_, untracked_hash) = get_untracked_address();
+        let cache = get_test_cache();
+
+        // Saving a transaction for an address we don't follow is a no-op
+        cache
+            .save_mempool_tx(untracked_hash, CachedTransaction::default())
+            .unwrap();
+
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_save_non_mempool_tx_untracked_address() {
+        let (_, untracked_hash) = get_untracked_address();
+        let cache = get_test_cache();
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+
+        cache
+            .save_non_mempool_tx(
+                &transaction,
+                false,
+                0,
+                0,
+                untracked_hash,
+                CachedTransaction::default(),
+            )
+            .unwrap();
+
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_cache_mempool_transaction_untracked_coins() {
+        let (untracked, _) = get_untracked_address();
+        let cache = get_test_cache();
+
+        // A mempool transaction touching neither our addresses nor our utxos doesn't
+        // report any coin back
+        let unrelated = build_spend(
+            OutPoint {
+                txid: Txid::all_zeros(),
+                vout: 0,
+            },
+            1_000,
+            &untracked,
+        );
+
+        assert!(
+            cache
+                .cache_mempool_transaction(&unrelated)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_get_address_utxos_unknown_address() {
+        let cache = get_test_cache();
+        let unknown_hash = get_spk_hash(&ScriptBuf::new());
+
+        assert!(cache.get_address_utxos(&unknown_hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_get_address_history_unknown_address() {
+        let cache = get_test_cache();
+        let unknown_hash = get_spk_hash(&ScriptBuf::new());
+
+        assert!(cache.get_address_history(&unknown_hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_get_merkle_proof_unknown_transaction() {
+        let cache = get_test_cache();
+        let unknown_txid = Txid::from_byte_array([0x42; 32]);
+
+        assert!(cache.get_merkle_proof(&unknown_txid).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_get_address_utxos_skips_unresolvable_utxos() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        // The address claims an utxo whose transaction was never saved
+        let missing_tx = OutPoint {
+            txid: Txid::from_byte_array([0x11; 32]),
+            vout: 0,
+        };
+        cache
+            .inner
+            .write()
+            .unwrap()
+            .address_map
+            .get_mut(&script_hash)
+            .unwrap()
+            .utxos
+            .push(missing_tx);
+        assert!(cache.get_address_utxos(&script_hash).unwrap().is_none());
+
+        // An utxo pointing past the end of its transaction's outputs
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        cache
+            .cache_transaction(
+                &transaction,
+                118511,
+                transaction.output[0].value.to_sat(),
+                MerkleProof::default(),
+                1,
+                0,
+                false,
+                script_hash,
+            )
+            .unwrap();
+        {
+            let mut inner = cache.inner.write().unwrap();
+            let entry = inner.address_map.get_mut(&script_hash).unwrap();
+            entry.utxos.clear();
+            entry.utxos.push(OutPoint {
+                txid: transaction.compute_txid(),
+                vout: 5,
+            });
+        }
+
+        assert!(cache.get_address_utxos(&script_hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_push_descriptor_invalid_descriptor_error() {
+        let cache = get_test_cache();
+
+        let error = cache.push_descriptor("not a descriptor").unwrap_err();
+
+        assert!(matches!(error, WatchOnlyError::InvalidDescriptor(_)));
+        // Nothing was cached nor persisted
+        assert!(cache.get_descriptors().unwrap().is_empty());
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_new_default_invalid_datadir_error() {
+        // A datadir whose parent is a regular file can't hold a database
+        let parent = std::env::temp_dir().join(format!("watch-only-{}.txt", rand::random::<u32>()));
+        std::fs::write(&parent, "not a directory").unwrap();
+
+        let result = AddressCache::new_default(parent.join("data"), ConsensusMerkle);
+
+        assert!(matches!(result, Err(WatchOnlyError::DatabaseError(_))));
+
+        std::fs::remove_file(&parent).unwrap();
+    }
+
+    #[test]
+    fn test_save_non_mempool_tx_unknown_spent_utxo() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        // A confirmed transaction paying the address, so it owns one utxo
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        cache
+            .cache_transaction(
+                &transaction,
+                118511,
+                transaction.output[0].value.to_sat(),
+                MerkleProof::default(),
+                1,
+                0,
+                false,
+                script_hash,
+            )
+            .unwrap();
+
+        // A spend of an utxo this address never owned: the balance is debited, but no
+        // utxo is removed
+        let spend = build_spend(
+            OutPoint {
+                txid: Txid::all_zeros(),
+                vout: 0,
+            },
+            1_000,
+            &address,
+        );
+        let cached = CachedTransaction {
+            tx: spend.clone(),
+            height: 118512,
+            merkle_block: None,
+            hash: spend.compute_txid(),
+            position: 1,
+        };
+
+        cache
+            .save_non_mempool_tx(&spend, true, 1_000, 0, script_hash, cached)
+            .unwrap();
+
+        assert_eq!(
+            cache.get_address_balance(&script_hash).unwrap(),
+            Some(999_890 - 1_000)
+        );
+        assert_eq!(
+            cache
+                .get_address_utxos(&script_hash)
+                .unwrap()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_failing_database_passes_operations_through() {
+        // An operation the fake wasn't told to fail reaches the in-memory database,
+        // otherwise the error tests below could pass because of a broken fake
+        let database = FailingDatabase::new();
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        let cached = CachedTransaction {
+            tx: transaction.clone(),
+            height: 118511,
+            merkle_block: None,
+            hash: transaction.compute_txid(),
+            position: 0,
+        };
+
+        database.save_stats(&Stats::default()).unwrap();
+        assert_eq!(database.get_stats().unwrap().address_count, 0);
+
+        database.set_cache_height(118511).unwrap();
+        assert_eq!(database.get_cache_height().unwrap(), 118511);
+
+        database.save_descriptor(TEST_TPUB_MAIN_DESCRIPTOR).unwrap();
+        assert_eq!(
+            database.get_descriptors().unwrap(),
+            vec![TEST_TPUB_MAIN_DESCRIPTOR]
+        );
+
+        database.save_transaction(&cached).unwrap();
+        assert_eq!(
+            database
+                .get_transaction(&transaction.compute_txid())
+                .unwrap()
+                .hash,
+            transaction.compute_txid()
+        );
+        assert_eq!(
+            database.list_transactions().unwrap(),
+            vec![transaction.compute_txid()]
+        );
+
+        assert!(database.load().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_get_stats_database_error() {
+        let cache = failing_cache([FailingOperation::GetStats]);
+
+        assert_database_error(cache.get_stats().unwrap_err());
+    }
+
+    #[test]
+    fn test_derive_addresses_database_error() {
+        let cache = failing_cache([FailingOperation::GetStats]);
+
+        assert_database_error(cache.derive_addresses().unwrap_err());
+    }
+
+    #[test]
+    fn test_derive_addresses_save_stats_error() {
+        let cache = failing_cache([FailingOperation::SaveStats]);
+
+        // Deriving addresses persists the derivation index
+        assert_database_error(cache.derive_addresses().unwrap_err());
+    }
+
+    #[test]
+    fn test_find_unconfirmed_list_transactions_error() {
+        let cache = failing_cache([FailingOperation::ListTransactions]);
+
+        assert_database_error(cache.find_unconfirmed().unwrap_err());
+    }
+
+    #[test]
+    fn test_push_descriptor_save_descriptor_error() {
+        let cache = failing_cache([FailingOperation::SaveDescriptor]);
+
+        assert_database_error(
+            cache
+                .push_descriptor(TEST_TPUB_MAIN_DESCRIPTOR)
+                .unwrap_err(),
+        );
+    }
+
+    #[test]
+    fn test_get_descriptors_database_error() {
+        let cache = failing_cache([FailingOperation::GetDescriptors]);
+
+        assert_database_error(cache.get_descriptors().unwrap_err());
+    }
+
+    #[test]
+    fn test_is_cached_database_error() {
+        let cache = failing_cache([FailingOperation::GetDescriptors]);
+
+        assert_database_error(cache.is_cached(TEST_TPUB_MAIN_DESCRIPTOR).unwrap_err());
+    }
+
+    #[test]
+    fn test_bump_height_set_cache_height_error() {
+        let cache = failing_cache([FailingOperation::SetCacheHeight]);
+
+        assert_database_error(cache.bump_height(118511).unwrap_err());
+    }
+
+    #[test]
+    fn test_setup_database_error() {
+        let cache = failing_cache([
+            FailingOperation::GetDescriptors,
+            FailingOperation::SetCacheHeight,
+        ]);
+
+        // Setup reads the descriptors first, and then resets the height it can't read
+        assert_database_error(cache.setup().unwrap_err());
+    }
+
+    #[test]
+    fn test_get_cache_height_falls_back_to_zero() {
+        let cache = failing_cache([FailingOperation::GetCacheHeight]);
+
+        // The height of a database that can't be read falls back to zero
+        assert_eq!(cache.get_cache_height().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_find_unconfirmed_get_transaction_error() {
+        let (address, script_hash) = get_test_address();
+        let cache = AddressCache::new(FailingDatabase::new(), ConsensusMerkle);
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        cache
+            .cache_transaction(
+                &transaction,
+                118511,
+                transaction.output[0].value.to_sat(),
+                MerkleProof::default(),
+                1,
+                0,
+                false,
+                script_hash,
+            )
+            .unwrap();
+
+        fail_database(&cache, [FailingOperation::GetTransaction]);
+
+        assert_database_error(cache.find_unconfirmed().unwrap_err());
     }
 }
