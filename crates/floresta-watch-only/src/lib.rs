@@ -690,17 +690,25 @@ where
         let address_descriptors =
             derive_addresses_from_descriptor(descriptor, INDEX_INITIAL, DERIVATION_COUNT)?;
 
-        for address in address_descriptors.clone() {
+        self.cache_addresses(address_descriptors.clone())?;
+
+        let inner = self.get_inner_write()?;
+        inner.database.save_descriptor(descriptor)?;
+
+        Ok(address_descriptors)
+    }
+
+    /// Caches every address derived from a descriptor, logging the first failure
+    /// before propagating it
+    fn cache_addresses(&self, addresses: Vec<ScriptBuf>) -> Result<(), WatchOnlyError> {
+        for address in addresses {
             self.cache_address(address).map_err(|e| {
                 error!("Error caching address: {e:?}");
                 e
             })?;
         }
 
-        let inner = self.get_inner_write()?;
-        inner.database.save_descriptor(descriptor)?;
-
-        Ok(address_descriptors)
+        Ok(())
     }
 
     /// Adds an XPUB to the wallet, derives descriptors from it, saves these descriptors persistently,
@@ -1823,6 +1831,21 @@ mod test {
 
         assert!(matches!(
             cache.cache_address(address.script_pubkey()).unwrap_err(),
+            WatchOnlyError::InternalError(_)
+        ));
+    }
+
+    #[test]
+    fn test_cache_addresses_poisoned_lock_error() {
+        let cache = poisoned_cache();
+        let (address, _) = get_test_address();
+
+        // The addresses can't be written, and the failure is logged before being
+        // returned to the caller
+        assert!(matches!(
+            cache
+                .cache_addresses(vec![address.script_pubkey()])
+                .unwrap_err(),
             WatchOnlyError::InternalError(_)
         ));
     }
