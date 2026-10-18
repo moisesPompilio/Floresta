@@ -202,6 +202,25 @@ mod test {
     }
 
     #[test]
+    fn test_verify_rejects_invalid_proofs() {
+        let txids: Vec<_> = (0..4u8)
+            .map(|value| Txid::from_byte_array([value; 32]))
+            .collect();
+        let root = ConsensusMerkle::calculate_root(&txids).unwrap().0;
+        let hashes: Vec<_> = txids.iter().map(|txid| txid.to_raw_hash()).collect();
+        let proof = MerkleProof::from_block_hashes(hashes, 1, &ConsensusMerkle);
+
+        // A proof is only valid for the root it was built for
+        let wrong_root = sha256d::Hash::from_byte_array([0x42; 32]);
+        assert!(!proof.verify(wrong_root).unwrap());
+
+        // Tampering with any branch hash must invalidate the proof as well
+        let mut tampered = proof.clone();
+        tampered.hashes[0] = sha256d::Hash::from_byte_array([0x11; 32]);
+        assert!(!tampered.verify(*root.as_raw_hash()).unwrap());
+    }
+
+    #[test]
     fn test_serialization() {
         use bitcoin::consensus::serialize;
         let hashes = Vec::from([
