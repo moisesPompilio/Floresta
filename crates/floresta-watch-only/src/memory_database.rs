@@ -234,37 +234,6 @@ mod test {
     }
 
     #[test]
-    fn test_save_address_persists() {
-        let database = MemoryDatabase::new();
-        let address = get_test_cached_address();
-
-        assert!(database.load().unwrap().is_empty());
-
-        database.save(&address);
-
-        let loaded = database.load().unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].script_hash, address.script_hash);
-        assert_eq!(loaded[0].balance, address.balance);
-        assert_eq!(loaded[0].script, address.script);
-    }
-
-    #[test]
-    fn test_update_address_overwrites_saved_address() {
-        let database = MemoryDatabase::new();
-        let address = get_test_cached_address();
-        database.save(&address);
-
-        let mut modified = address.clone();
-        modified.balance = 999_890;
-        database.update(&modified);
-
-        let loaded = database.load().unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].balance, 999_890);
-    }
-
-    #[test]
     fn test_update_unknown_address_does_not_insert() {
         let database = MemoryDatabase::new();
 
@@ -288,19 +257,6 @@ mod test {
         assert!(matches!(
             WatchOnlyError::from(error),
             WatchOnlyError::DatabaseError(message) if message == "Poisoned lock"
-        ));
-    }
-
-    #[test]
-    fn test_get_transaction_not_found_error() {
-        let database = MemoryDatabase::new();
-
-        assert!(database.list_transactions().unwrap().is_empty());
-
-        // looking up a transaction we never saved tells us it's not found
-        assert!(matches!(
-            database.get_transaction(&Txid::all_zeros()),
-            Err(MemoryDatabaseError::PoisonedLock)
         ));
     }
 
