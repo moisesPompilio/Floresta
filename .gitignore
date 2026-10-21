@@ -37,3 +37,8 @@ config.toml
 
 # tests pycache
 tests/**/__pycache__/*
+
+# Mutation testing outputs
+/mutants.out/
+/mutants.out.old/
+/mutants.out.*/
