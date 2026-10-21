@@ -60,6 +60,31 @@ For the full test suite, including long-running tests, use:
 cargo test --release
 ```
 
+## Mutation testing
+
+[mutants-matrix.sh](../contrib/mutants-matrix.sh) checks suite quality over
+the feature matrix (all, default, and no-default features), reporting the
+union of the three configurations. It makes small code changes the suite
+must detect:
+
+Prerequisite:
+
+```bash
+cargo install cargo-mutants
+```
+
+```bash
+./contrib/mutants-matrix.sh -p floresta-watch-only
+./contrib/mutants-matrix.sh --diff origin/master -p floresta-watch-only
+```
+
+A mutant is a small code change the suite must detect: a killed mutant means
+the tests failed as expected. Survivors are listed in `mutants.out/missed.txt`
+(tests didn't notice) and `mutants.out/timeout.txt` (the suite hung instead of
+failing). It exits `0` when no mutant survives, `1` when survivors remain,
+and `2` on usage or run failures; run `./contrib/mutants-matrix.sh --help`
+for details.
+
 Next sections will cover the Python functional tests.
 
 ### Setting Functional Tests Binaries
