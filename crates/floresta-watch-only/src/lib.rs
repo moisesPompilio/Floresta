@@ -1934,6 +1934,57 @@ mod test {
     }
 
     #[test]
+    fn test_save_mempool_tx() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        // Saving a mempool transaction for a tracked address adds it to its history
+        cache
+            .save_mempool_tx(script_hash, CachedTransaction::default())
+            .unwrap();
+
+        let cached = cache.inner.read().unwrap();
+        assert_eq!(
+            cached.address_map.get(&script_hash).unwrap().transactions,
+            vec![Txid::all_zeros()]
+        );
+    }
+
+    #[test]
+    fn test_save_mempool_tx_untracked_address() {
+        let (_, untracked_hash) = get_untracked_address();
+        let cache = get_test_cache();
+
+        // Saving a transaction for an address we don't follow is a no-op
+        cache
+            .save_mempool_tx(untracked_hash, CachedTransaction::default())
+            .unwrap();
+
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_save_non_mempool_tx_untracked_address() {
+        let (_, untracked_hash) = get_untracked_address();
+        let cache = get_test_cache();
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+
+        cache
+            .save_non_mempool_tx(
+                &transaction,
+                false,
+                0,
+                0,
+                untracked_hash,
+                CachedTransaction::default(),
+            )
+            .unwrap();
+
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+    }
+
+    #[test]
     fn test_cache_mempool_transaction_untracked_coins() {
         let (untracked, _) = get_untracked_address();
         let cache = get_test_cache();
