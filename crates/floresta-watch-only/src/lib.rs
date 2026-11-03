@@ -1058,6 +1058,23 @@ mod test {
         }
     }
 
+    /// Poisons [`AddressCache`]'s inner lock, by panicking while holding it
+    fn poison_lock(cache: &AddressCache<MemoryDatabase>) {
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = cache.inner.write().unwrap();
+            panic!("poisoning the lock on purpose");
+        }));
+        assert!(poisoned.is_err());
+    }
+
+    /// A cache whose inner lock was poisoned, so every operation reports an internal error
+    fn poisoned_cache() -> AddressCache<MemoryDatabase> {
+        let cache = get_test_cache();
+        poison_lock(&cache);
+
+        cache
+    }
+
     /// An address the test caches don't follow
     fn get_untracked_address() -> (Address<NetworkChecked>, sha256::Hash) {
         let address = Address::from_str("tb1q7e5q2y0mpvesst3jxhe45q0e2q9gdkfd6zxzqa")
@@ -1939,11 +1956,166 @@ mod test {
         assert_eq!(cache.get_address_balance(&script_hash).unwrap(), Some(0));
     }
 
+    /// Every [`AddressCache`] method that takes the inner lock, called on a poisoned one
+    #[test]
+    fn test_poisoned_lock_every_method_reports_internal_error() {
+        type Call = fn(&AddressCache<MemoryDatabase>) -> Option<WatchOnlyError>;
+
+        let cases: &[(&str, Call)] = &[
+            ("n_cached_addresses", |cache| {
+                cache.n_cached_addresses().err()
+            }),
+            ("cache_address", |cache| {
+                let (address, _) = get_test_address();
+
+                cache.cache_address(address.script_pubkey()).err()
+            }),
+            ("get_utxo", |cache| {
+                let outpoint = OutPoint {
+                    txid: Txid::all_zeros(),
+                    vout: 0,
+                };
+
+                cache.get_utxo(&outpoint).err()
+            }),
+            ("get_address_balance", |cache| {
+                let (_, script_hash) = get_test_address();
+
+                cache.get_address_balance(&script_hash).err()
+            }),
+            ("get_cached_addresses", |cache| {
+                cache.get_cached_addresses().err()
+            }),
+            ("bump_height", |cache| cache.bump_height(1).err()),
+            ("get_cache_height", |cache| cache.get_cache_height().err()),
+            ("is_cached", |cache| {
+                cache.is_cached(TEST_TPUB_MAIN_DESCRIPTOR).err()
+            }),
+            ("is_address_cached", |cache| {
+                let (_, script_hash) = get_test_address();
+
+                cache.is_address_cached(&script_hash).err()
+            }),
+            ("push_descriptor", |cache| {
+                cache.push_descriptor(TEST_TPUB_MAIN_DESCRIPTOR).err()
+            }),
+            ("push_xpub", |cache| {
+                cache.push_xpub(TEST_TPUB, Network::Testnet).err()
+            }),
+            ("get_position", |cache| {
+                cache.get_position(&Txid::all_zeros()).err()
+            }),
+            ("get_height", |cache| {
+                cache.get_height(&Txid::all_zeros()).err()
+            }),
+            ("get_cached_transaction", |cache| {
+                cache.get_cached_transaction(&Txid::all_zeros()).err()
+            }),
+            ("setup", |cache| cache.setup().err()),
+            ("block_process", |cache| {
+                let block: bitcoin::Block = deserialize_from_str(BLOCK_SPEND);
+
+                cache.block_process(&block, 118511).err()
+            }),
+            ("get_address_utxos", |cache| {
+                let (_, script_hash) = get_test_address();
+
+                cache.get_address_utxos(&script_hash).err()
+            }),
+            ("get_transaction", |cache| {
+                cache.get_transaction(&Txid::all_zeros()).err()
+            }),
+            ("get_address_history", |cache| {
+                let (_, script_hash) = get_test_address();
+
+                cache.get_address_history(&script_hash).err()
+            }),
+            ("get_merkle_proof", |cache| {
+                cache.get_merkle_proof(&Txid::all_zeros()).err()
+            }),
+            ("derive_addresses", |cache| cache.derive_addresses().err()),
+            ("get_stats", |cache| cache.get_stats().err()),
+            ("maybe_derive_addresses", |cache| {
+                let (_, script_hash) = get_test_address();
+
+                cache.maybe_derive_addresses(&script_hash).err()
+            }),
+            ("find_unconfirmed", |cache| cache.find_unconfirmed().err()),
+            ("cache_mempool_transaction", |cache| {
+                let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+
+                cache.cache_mempool_transaction(&transaction).err()
+            }),
+            ("save_mempool_tx", |cache| {
+                let (_, script_hash) = get_test_address();
+
+                cache
+                    .save_mempool_tx(script_hash, CachedTransaction::default())
+                    .err()
+            }),
+            ("save_non_mempool_tx", |cache| {
+                let (_, script_hash) = get_test_address();
+                let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+
+                cache
+                    .save_non_mempool_tx(
+                        &transaction,
+                        false,
+                        0,
+                        0,
+                        script_hash,
+                        CachedTransaction::default(),
+                    )
+                    .err()
+            }),
+            ("get_descriptors", |cache| cache.get_descriptors().err()),
+            ("cache_transaction", |cache| {
+                let (_, script_hash) = get_test_address();
+                let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+
+                cache
+                    .cache_transaction(
+                        &transaction,
+                        0,
+                        0,
+                        MerkleProof::default(),
+                        0,
+                        0,
+                        false,
+                        script_hash,
+                    )
+                    .err()
+            }),
+        ];
+
+        // One poisoned cache per call, so no case depends on a previous one
+        for (name, call) in cases {
+            let cache = poisoned_cache();
+
+            let error = call(&cache).unwrap_or_else(|| panic!("{name} succeeded"));
+
+            assert!(
+                matches!(error, WatchOnlyError::InternalError(_)),
+                "{name}: {error:?}"
+            );
+        }
+    }
+
     #[test]
     fn test_wants_spent_utxos() {
         let cache = get_test_cache();
 
         assert!(!BlockConsumer::wants_spent_utxos(&cache));
+    }
+
+    #[test]
+    fn test_on_block_swallows_block_process_error() {
+        let cache = poisoned_cache();
+        let block: bitcoin::Block = deserialize_from_str(BLOCK_SPEND);
+
+        // `block_process` fails on the poisoned lock, but `on_block` can't report it: the
+        // error is logged and swallowed, so the consumer keeps going instead of panicking
+        BlockConsumer::on_block(&cache, &block, 118511, None);
     }
 
     #[test]
