@@ -2522,6 +2522,22 @@ mod test {
     }
 
     #[test]
+    fn test_push_descriptor_non_wildcard_derivation_error() {
+        // A descriptor without a wildcard whose multipath keys have tuples of different
+        // lengths parses fine, so it is known to have no wildcard, but it can't be derived
+        let other_tpub = "tpubDDw6pwZA3hYxcSN32q7a5ynsKmWr4BbkBNHydHPKkM4BZwUfiK7tQ26h7USm8kA1E2FvCy7f7Er7QXKF8RNptATywydARtzgrxuPDwyYv4x";
+        let descriptor = format!("tr({TEST_TPUB}/<0;1>,pk({other_tpub}/<0;1;2>))");
+        let cache = get_test_cache();
+
+        let error = cache.push_descriptor(&descriptor).unwrap_err();
+
+        assert!(matches!(error, WatchOnlyError::InvalidDescriptor(_)));
+        // Nothing was cached nor persisted
+        assert!(cache.get_descriptors().unwrap().is_empty());
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+    }
+
+    #[test]
     fn test_new_default_invalid_datadir_error() {
         // A datadir whose parent is a regular file can't hold a database
         let datadir = TestDatadir::new();
