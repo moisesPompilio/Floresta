@@ -937,6 +937,7 @@ where
 
 #[cfg(test)]
 mod test {
+    use core::cell::RefCell;
     use core::str::FromStr;
     use std::path::Path;
     use std::path::PathBuf;
@@ -969,9 +970,11 @@ mod test {
 
     use super::AddressCache;
     use super::AddressCacheDatabase;
+    use super::CachedAddress;
     use super::CachedTransaction;
     use super::Stats;
     use super::memory_database::MemoryDatabase;
+    use super::memory_database::MemoryDatabaseError;
     use crate::DERIVATION_COUNT;
     use crate::descriptor::derive_addresses_from_descriptor;
     use crate::kv_database::KvDatabase;
@@ -1083,6 +1086,132 @@ mod test {
         let script_hash = get_spk_hash(&address.script_pubkey());
 
         (address, script_hash)
+    }
+
+    /// The database operations a [`FailingDatabase`] can be told to fail
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum FailingOperation {
+        GetStats,
+        SaveStats,
+        GetCacheHeight,
+        SetCacheHeight,
+        GetDescriptors,
+        SaveDescriptor,
+        GetTransaction,
+        ListTransactions,
+    }
+
+    /// A [`MemoryDatabase`] that fails the operations it was told to, so the error
+    /// handling of [`AddressCache`] can be exercised
+    struct FailingDatabase {
+        inner: MemoryDatabase,
+        failing: RefCell<Vec<FailingOperation>>,
+    }
+
+    impl FailingDatabase {
+        fn new() -> Self {
+            Self {
+                inner: MemoryDatabase::new(),
+                failing: RefCell::new(Vec::new()),
+            }
+        }
+
+        /// Makes the given operations fail from now on
+        fn fail(&self, operations: impl IntoIterator<Item = FailingOperation>) {
+            self.failing.replace(operations.into_iter().collect());
+        }
+
+        /// Runs `operation` over the inner database, unless it was told to fail
+        fn fail_unless(&self, operation: FailingOperation) -> Result<(), MemoryDatabaseError> {
+            if self.failing.borrow().contains(&operation) {
+                return Err(MemoryDatabaseError::PoisonedLock);
+            }
+
+            Ok(())
+        }
+    }
+
+    impl AddressCacheDatabase for FailingDatabase {
+        type Error = MemoryDatabaseError;
+
+        fn save(&self, address: &CachedAddress) {
+            self.inner.save(address);
+        }
+
+        fn load(&self) -> Result<Vec<CachedAddress>, Self::Error> {
+            self.inner.load()
+        }
+
+        fn get_stats(&self) -> Result<Stats, Self::Error> {
+            self.fail_unless(FailingOperation::GetStats)?;
+            self.inner.get_stats()
+        }
+
+        fn save_stats(&self, stats: &Stats) -> Result<(), Self::Error> {
+            self.fail_unless(FailingOperation::SaveStats)?;
+            self.inner.save_stats(stats)
+        }
+
+        fn update(&self, address: &CachedAddress) {
+            self.inner.update(address);
+        }
+
+        fn get_cache_height(&self) -> Result<u32, Self::Error> {
+            self.fail_unless(FailingOperation::GetCacheHeight)?;
+            self.inner.get_cache_height()
+        }
+
+        fn set_cache_height(&self, height: u32) -> Result<(), Self::Error> {
+            self.fail_unless(FailingOperation::SetCacheHeight)?;
+            self.inner.set_cache_height(height)
+        }
+
+        fn save_descriptor(&self, descriptor: &str) -> Result<(), Self::Error> {
+            self.fail_unless(FailingOperation::SaveDescriptor)?;
+            self.inner.save_descriptor(descriptor)
+        }
+
+        fn get_descriptors(&self) -> Result<Vec<String>, Self::Error> {
+            self.fail_unless(FailingOperation::GetDescriptors)?;
+            self.inner.get_descriptors()
+        }
+
+        fn get_transaction(&self, txid: &Txid) -> Result<CachedTransaction, Self::Error> {
+            self.fail_unless(FailingOperation::GetTransaction)?;
+            self.inner.get_transaction(txid)
+        }
+
+        fn save_transaction(&self, tx: &CachedTransaction) -> Result<(), Self::Error> {
+            self.inner.save_transaction(tx)
+        }
+
+        fn list_transactions(&self) -> Result<Vec<Txid>, Self::Error> {
+            self.fail_unless(FailingOperation::ListTransactions)?;
+            self.inner.list_transactions()
+        }
+    }
+
+    /// Makes the cache's database fail the given operations
+    fn fail_database(
+        cache: &AddressCache<FailingDatabase>,
+        operations: impl IntoIterator<Item = FailingOperation>,
+    ) {
+        cache.inner.write().unwrap().database.fail(operations);
+    }
+
+    /// A cache whose database fails the given operations
+    fn failing_cache(
+        operations: impl IntoIterator<Item = FailingOperation>,
+    ) -> AddressCache<FailingDatabase> {
+        let cache = AddressCache::new(FailingDatabase::new(), ConsensusMerkle);
+        fail_database(&cache, operations);
+
+        cache
+    }
+
+    /// Asserts that the error came from the database
+    fn assert_database_error(error: WatchOnlyError) {
+        assert!(matches!(error, WatchOnlyError::DatabaseError(_)));
     }
 
     #[test]
@@ -2354,5 +2483,169 @@ mod test {
                 .len(),
             1
         );
+    }
+
+    /// Every place where [`AddressCache`] propagates a database failure, one case each
+    #[test]
+    fn test_database_failures_are_reported() {
+        type Call = fn(&AddressCache<FailingDatabase>) -> Result<(), WatchOnlyError>;
+
+        let cases: [(&str, &[FailingOperation], Call); 9] = [
+            ("get_stats", &[FailingOperation::GetStats], |cache| {
+                cache.get_stats().map(drop)
+            }),
+            (
+                "derive_addresses reading the stats",
+                &[FailingOperation::GetStats],
+                |cache| cache.derive_addresses(),
+            ),
+            (
+                "derive_addresses reading the descriptors",
+                &[FailingOperation::GetDescriptors],
+                |cache| cache.derive_addresses(),
+            ),
+            (
+                "derive_addresses saving the stats",
+                &[FailingOperation::SaveStats],
+                |cache| cache.derive_addresses(),
+            ),
+            (
+                "get_descriptors",
+                &[FailingOperation::GetDescriptors],
+                |cache| cache.get_descriptors().map(drop),
+            ),
+            ("is_cached", &[FailingOperation::GetDescriptors], |cache| {
+                cache.is_cached(TEST_TPUB_MAIN_DESCRIPTOR).map(drop)
+            }),
+            (
+                "bump_height",
+                &[FailingOperation::SetCacheHeight],
+                |cache| cache.bump_height(118511),
+            ),
+            (
+                "setup resetting the height",
+                &[
+                    FailingOperation::GetDescriptors,
+                    FailingOperation::SetCacheHeight,
+                ],
+                |cache| cache.setup(),
+            ),
+            (
+                "find_unconfirmed listing the transactions",
+                &[FailingOperation::ListTransactions],
+                |cache| cache.find_unconfirmed().map(drop),
+            ),
+        ];
+
+        for (name, failing, call) in cases {
+            let cache = failing_cache(failing.iter().copied());
+
+            let error = call(&cache).expect_err(name);
+
+            assert!(
+                matches!(error, WatchOnlyError::DatabaseError(_)),
+                "{name}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_push_descriptor_get_stats_failure_leaves_nothing_behind() {
+        let cache = failing_cache([FailingOperation::GetStats]);
+
+        assert_database_error(
+            cache
+                .push_descriptor(TEST_TPUB_MAIN_DESCRIPTOR)
+                .unwrap_err(),
+        );
+
+        // It failed before deriving anything
+        fail_database(&cache, []);
+        assert!(cache.get_descriptors().unwrap().is_empty());
+        assert_eq!(derivation_index(&cache), 0);
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_push_descriptor_save_descriptor_failure_can_be_retried() {
+        let cache = failing_cache([FailingOperation::SaveDescriptor]);
+
+        assert_database_error(
+            cache
+                .push_descriptor(TEST_TPUB_MAIN_DESCRIPTOR)
+                .unwrap_err(),
+        );
+
+        // The descriptor wasn't persisted and the horizon didn't move. The addresses
+        // derived before the failure stay cached, which is harmless: a retry derives
+        // the same ones.
+        fail_database(&cache, []);
+        assert!(cache.get_descriptors().unwrap().is_empty());
+        assert_eq!(derivation_index(&cache), 0);
+
+        // So pushing it again isn't rejected as a duplicate, and ends up in the same
+        // state as if the first attempt had succeeded
+        cache.push_descriptor(TEST_TPUB_MAIN_DESCRIPTOR).unwrap();
+        assert_eq!(
+            cache.get_descriptors().unwrap(),
+            vec![TEST_TPUB_MAIN_DESCRIPTOR]
+        );
+        assert_eq!(derivation_index(&cache), DERIVATION_COUNT);
+        assert_eq!(
+            cache.n_cached_addresses().unwrap(),
+            DERIVATION_COUNT as usize
+        );
+    }
+
+    #[test]
+    fn test_push_descriptor_save_stats_failure_keeps_derivation_index() {
+        let cache = failing_cache([FailingOperation::SaveStats]);
+
+        assert_database_error(
+            cache
+                .push_descriptor(TEST_TPUB_MAIN_DESCRIPTOR)
+                .unwrap_err(),
+        );
+
+        // The horizon is only recorded once everything else succeeded
+        fail_database(&cache, []);
+        assert_eq!(derivation_index(&cache), 0);
+    }
+
+    #[test]
+    fn test_get_cache_height_falls_back_to_zero() {
+        let cache = failing_cache([]);
+        cache.bump_height(118511).unwrap();
+        assert_eq!(cache.get_cache_height().unwrap(), 118511);
+
+        fail_database(&cache, [FailingOperation::GetCacheHeight]);
+
+        // The height of a database that can't be read falls back to zero
+        assert_eq!(cache.get_cache_height().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_find_unconfirmed_get_transaction_error() {
+        let (address, script_hash) = get_test_address();
+        let cache = AddressCache::new(FailingDatabase::new(), ConsensusMerkle);
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        cache
+            .cache_transaction(
+                &transaction,
+                118511,
+                transaction.output[0].value.to_sat(),
+                MerkleProof::default(),
+                1,
+                0,
+                false,
+                script_hash,
+            )
+            .unwrap();
+
+        fail_database(&cache, [FailingOperation::GetTransaction]);
+
+        assert_database_error(cache.find_unconfirmed().unwrap_err());
     }
 }
