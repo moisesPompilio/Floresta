@@ -1577,6 +1577,14 @@ mod test {
     }
 
     #[test]
+    #[should_panic(expected = "called `Result::unwrap()` on an `Err` value")]
+    fn test_cached_transaction_default() {
+        // The placeholder transaction can't be deserialized: its empty input list is read
+        // as the segwit marker, so building the default value panics
+        let _ = CachedTransaction::default();
+    }
+
+    #[test]
     fn test_is_address_cached() {
         let (address, script_hash) = get_test_address();
         let cache = get_test_cache();
