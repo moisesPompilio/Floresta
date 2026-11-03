@@ -935,12 +935,16 @@ where
 #[cfg(test)]
 mod test {
     use core::str::FromStr;
+    use std::path::Path;
+    use std::path::PathBuf;
 
     use bitcoin::Address;
     use bitcoin::Amount;
+    use bitcoin::Network;
     use bitcoin::OutPoint;
     use bitcoin::ScriptBuf;
     use bitcoin::Transaction;
+    use bitcoin::TxIn;
     use bitcoin::TxOut;
     use bitcoin::Txid;
     use bitcoin::absolute::LockTime;
@@ -951,17 +955,18 @@ mod test {
     use bitcoin::hashes::hex::FromHex;
     use bitcoin::hashes::sha256;
     use bitcoin::transaction::Version;
+    use floresta_chain::BlockConsumer;
     use floresta_chain::pruned_utreexo::merkle::ConsensusMerkle;
     use floresta_common::get_spk_hash;
     use floresta_common::prelude::*;
     use floresta_domain::wallet::error::WatchOnlyError;
 
     use super::AddressCache;
+    use super::AddressCacheDatabase;
     use super::CachedTransaction;
+    use super::Stats;
     use super::memory_database::MemoryDatabase;
-    use crate::AddressCacheDatabase;
     use crate::DERIVATION_COUNT;
-    use crate::Stats;
     use crate::descriptor::derive_addresses_from_descriptor;
     use crate::kv_database::KvDatabase;
     use crate::merkle::MerkleProof;
@@ -984,6 +989,75 @@ mod test {
             .unwrap()
             .assume_checked();
         let script_hash = get_spk_hash(&address.script_pubkey());
+        (address, script_hash)
+    }
+
+    /// The script hash of the address at `index` under `descriptor`, as recorded
+    /// in `derived_index` when the cache derives it
+    fn derived_address_hash(descriptor: &str, index: u32) -> sha256::Hash {
+        let script = derive_addresses_from_descriptor(descriptor, index, 1)
+            .unwrap()
+            .pop()
+            .unwrap();
+        get_spk_hash(&script)
+    }
+
+    /// A tpub and the descriptors it expands to, as in the descriptor test cases
+    const TEST_TPUB: &str = "tpubDC73PMTHeKDXnFwNFz8CLBy2VVx4D85WW2vbzwVLwCD9zkQ6Vj97muhLRTbKvmue1PyVQLwizvBW6v2SD1LnzbeuHnRsDYQZGE8urTZHMn5";
+    const TEST_TPUB_MAIN_DESCRIPTOR: &str = "pkh(tpubDC73PMTHeKDXnFwNFz8CLBy2VVx4D85WW2vbzwVLwCD9zkQ6Vj97muhLRTbKvmue1PyVQLwizvBW6v2SD1LnzbeuHnRsDYQZGE8urTZHMn5/0/*)#8zp7ryrl";
+    const TEST_TPUB_CHANGE_DESCRIPTOR: &str = "pkh(tpubDC73PMTHeKDXnFwNFz8CLBy2VVx4D85WW2vbzwVLwCD9zkQ6Vj97muhLRTbKvmue1PyVQLwizvBW6v2SD1LnzbeuHnRsDYQZGE8urTZHMn5/1/*)#kkyl73n8";
+
+    /// A unique datadir under the system temp dir, removed when dropped, even if the
+    /// test panics.
+    ///
+    /// Declare it before the value that opens a database in it: locals drop in reverse
+    /// order, so the database is closed before the directory is removed.
+    struct TestDatadir(PathBuf);
+
+    impl TestDatadir {
+        fn new() -> Self {
+            let name = format!("watch-only-{}.floresta", rand::random::<u32>());
+            Self(std::env::temp_dir().join(name))
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDatadir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Builds a transaction spending `utxo` and paying `amount` back to `address`
+    fn build_spend(
+        utxo: OutPoint,
+        amount: u64,
+        address: &Address<NetworkChecked>,
+    ) -> bitcoin::Transaction {
+        bitcoin::Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: utxo,
+                ..Default::default()
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(amount),
+                script_pubkey: address.script_pubkey(),
+            }],
+        }
+    }
+
+    /// An address the test caches don't follow
+    fn get_untracked_address() -> (Address<NetworkChecked>, sha256::Hash) {
+        let address = Address::from_str("tb1q7e5q2y0mpvesst3jxhe45q0e2q9gdkfd6zxzqa")
+            .unwrap()
+            .assume_checked();
+        let script_hash = get_spk_hash(&address.script_pubkey());
+
         (address, script_hash)
     }
 
@@ -1499,6 +1573,499 @@ mod test {
         assert_eq!(
             history,
             vec![(2, tx_a.compute_txid()), (5, tx_b.compute_txid())]
+        );
+    }
+
+    #[test]
+    fn test_is_address_cached() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+
+        assert!(!cache.is_address_cached(&script_hash).unwrap());
+
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        assert!(cache.is_address_cached(&script_hash).unwrap());
+    }
+
+    #[test]
+    fn test_get_cached_addresses() {
+        let (address, _) = get_test_address();
+        let cache = get_test_cache();
+
+        assert!(cache.get_cached_addresses().unwrap().is_empty());
+
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        assert_eq!(
+            cache.get_cached_addresses().unwrap(),
+            vec![address.script_pubkey()]
+        );
+    }
+
+    #[test]
+    fn test_get_utxo() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        // An outpoint we don't track at all
+        let unknown = OutPoint {
+            txid: Txid::all_zeros(),
+            vout: 0,
+        };
+        assert!(cache.get_utxo(&unknown).unwrap().is_none());
+
+        // An outpoint our index knows about, but whose transaction was never saved:
+        // we can't resolve its value, so it's reported as spent
+        cache
+            .inner
+            .write()
+            .unwrap()
+            .utxo_index
+            .insert(unknown, script_hash);
+        assert!(cache.get_utxo(&unknown).unwrap().is_none());
+
+        // An outpoint backing a transaction we cached resolves to its output
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        cache
+            .cache_transaction(
+                &transaction,
+                118511,
+                transaction.output[0].value.to_sat(),
+                MerkleProof::default(),
+                1,
+                0,
+                false,
+                script_hash,
+            )
+            .unwrap();
+
+        let utxo = OutPoint {
+            txid: transaction.compute_txid(),
+            vout: 0,
+        };
+        assert_eq!(
+            cache.get_utxo(&utxo).unwrap().unwrap().value.to_sat(),
+            999_890
+        );
+    }
+
+    #[test]
+    fn test_get_transaction() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        cache
+            .cache_transaction(
+                &transaction,
+                118511,
+                transaction.output[0].value.to_sat(),
+                MerkleProof::default(),
+                1,
+                0,
+                false,
+                script_hash,
+            )
+            .unwrap();
+
+        let cached = cache
+            .get_transaction(&Txid::from_str(PAYING_TXID).unwrap())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cached.height, 118511);
+        assert_eq!(cached.position, 1);
+        assert!(cache.get_transaction(&Txid::all_zeros()).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_push_xpub() {
+        let cache = get_test_cache();
+
+        cache.push_xpub(TEST_TPUB, Network::Testnet).unwrap();
+
+        assert_eq!(
+            cache.get_descriptors().unwrap(),
+            vec![TEST_TPUB_MAIN_DESCRIPTOR, TEST_TPUB_CHANGE_DESCRIPTOR]
+        );
+        assert!(cache.is_cached(TEST_TPUB_MAIN_DESCRIPTOR).unwrap());
+        assert!(cache.is_cached(TEST_TPUB_CHANGE_DESCRIPTOR).unwrap());
+        // both the external and the change descriptors derive a window of addresses
+        assert_eq!(
+            cache.n_cached_addresses().unwrap(),
+            2 * DERIVATION_COUNT as usize
+        );
+
+        // Pushing the same xpub a second time is rejected
+        let error = cache.push_xpub(TEST_TPUB, Network::Testnet).unwrap_err();
+        assert!(matches!(error, WatchOnlyError::DuplicateDescriptor { .. }));
+
+        // So is an xpub that doesn't belong to the network we're operating on
+        let error = cache.push_xpub(TEST_TPUB, Network::Bitcoin).unwrap_err();
+        assert!(matches!(error, WatchOnlyError::InvalidDescriptor(_)));
+    }
+
+    #[test]
+    fn test_maybe_derive_addresses() {
+        let cache = get_test_cache();
+
+        // A hash that isn't a derived address derives nothing
+        let (_, untracked_hash) = get_untracked_address();
+        cache.maybe_derive_addresses(&untracked_hash).unwrap();
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+
+        cache.push_descriptor(TEST_TPUB_MAIN_DESCRIPTOR).unwrap();
+        assert_eq!(
+            cache.n_cached_addresses().unwrap(),
+            DERIVATION_COUNT as usize
+        );
+
+        // A payment to the last derived address is within GAP_LIMIT of the horizon,
+        // so a new batch of addresses is derived
+        let hash = derived_address_hash(TEST_TPUB_MAIN_DESCRIPTOR, DERIVATION_COUNT - 1);
+        cache.maybe_derive_addresses(&hash).unwrap();
+
+        // The next window was derived, moving the horizon forward
+        assert_eq!(
+            cache.get_stats().unwrap().derivation_index,
+            2 * DERIVATION_COUNT
+        );
+        assert_eq!(
+            cache.n_cached_addresses().unwrap(),
+            2 * DERIVATION_COUNT as usize
+        );
+    }
+
+    #[test]
+    fn test_maybe_derive_addresses_gap_limit() {
+        let cache = get_test_cache();
+        cache.push_descriptor(TEST_TPUB_MAIN_DESCRIPTOR).unwrap();
+
+        // A payment to an early derived address is more than GAP_LIMIT behind the
+        // horizon, so no new addresses are derived
+        let early_hash = derived_address_hash(TEST_TPUB_MAIN_DESCRIPTOR, 0);
+        cache.maybe_derive_addresses(&early_hash).unwrap();
+        assert_eq!(
+            cache.get_stats().unwrap().derivation_index,
+            DERIVATION_COUNT
+        );
+
+        // A payment within GAP_LIMIT of the horizon derives a new window
+        let near_horizon_hash =
+            derived_address_hash(TEST_TPUB_MAIN_DESCRIPTOR, DERIVATION_COUNT - 1);
+        cache.maybe_derive_addresses(&near_horizon_hash).unwrap();
+        assert_eq!(
+            cache.get_stats().unwrap().derivation_index,
+            2 * DERIVATION_COUNT
+        );
+    }
+
+    #[test]
+    fn test_cache_mempool_transaction() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        // A confirmed transaction paying the tracked address, so it owns an utxo
+        let confirmed: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        cache
+            .cache_transaction(
+                &confirmed,
+                118511,
+                confirmed.output[0].value.to_sat(),
+                MerkleProof::default(),
+                1,
+                0,
+                false,
+                script_hash,
+            )
+            .unwrap();
+
+        // An unconfirmed transaction spending that utxo and paying the address again
+        let utxo = OutPoint {
+            txid: confirmed.compute_txid(),
+            vout: 0,
+        };
+        let spend = build_spend(utxo, 1_000, &address);
+
+        let coins = cache.cache_mempool_transaction(&spend).unwrap();
+
+        // The spent utxo and the new payment are both reported back to the caller
+        assert_eq!(coins.len(), 2);
+        assert_eq!(coins[0].value.to_sat(), 999_890);
+        assert_eq!(coins[1].value.to_sat(), 1_000);
+
+        // Both the confirmed and the mempool transaction are in the address history
+        let history = cache.get_address_history(&script_hash).unwrap().unwrap();
+        assert_eq!(history.len(), 2);
+        assert!(
+            history
+                .iter()
+                .any(|tx| tx.hash == spend.compute_txid() && tx.height == 0)
+        );
+
+        let unconfirmed = cache.find_unconfirmed().unwrap();
+        assert_eq!(unconfirmed.len(), 1);
+        assert_eq!(unconfirmed[0].compute_txid(), spend.compute_txid());
+
+        // Caching the same mempool transaction again doesn't duplicate its history entry
+        cache.cache_mempool_transaction(&spend).unwrap();
+        let history = cache.get_address_history(&script_hash).unwrap().unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .filter(|tx| tx.hash == spend.compute_txid())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_save_non_mempool_tx() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        let cached = CachedTransaction {
+            tx: transaction.clone(),
+            height: 118511,
+            merkle_block: None,
+            hash: transaction.compute_txid(),
+            position: 1,
+        };
+
+        // A transaction creating an utxo for the address
+        cache
+            .save_non_mempool_tx(
+                &transaction,
+                false,
+                transaction.output[0].value.to_sat(),
+                0,
+                script_hash,
+                cached,
+            )
+            .unwrap();
+        assert_eq!(
+            cache.get_address_balance(&script_hash).unwrap(),
+            Some(999_890)
+        );
+
+        // A transaction spending that utxo
+        let utxo = OutPoint {
+            txid: transaction.compute_txid(),
+            vout: 0,
+        };
+        let spend = build_spend(utxo, 999_000, &address);
+        let cached_spend = CachedTransaction {
+            tx: spend.clone(),
+            height: 118512,
+            merkle_block: None,
+            hash: spend.compute_txid(),
+            position: 0,
+        };
+
+        cache
+            .save_non_mempool_tx(&spend, true, 999_890, 0, script_hash, cached_spend)
+            .unwrap();
+
+        assert_eq!(cache.get_address_balance(&script_hash).unwrap(), Some(0));
+    }
+
+    #[test]
+    fn test_wants_spent_utxos() {
+        let cache = get_test_cache();
+
+        assert!(!BlockConsumer::wants_spent_utxos(&cache));
+    }
+
+    #[test]
+    fn test_new_default() {
+        let datadir = TestDatadir::new();
+        let cache = AddressCache::new_default(datadir.path(), ConsensusMerkle).unwrap();
+
+        // A wallet that was just initialized follows no address yet
+        assert!(cache.get_descriptors().unwrap().is_empty());
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_setup() {
+        let datadir = TestDatadir::new();
+        let cache = AddressCache::new_default(datadir.path(), ConsensusMerkle).unwrap();
+
+        cache.setup().unwrap();
+
+        // A wallet that was just initialized scans from the genesis block
+        assert_eq!(cache.get_cache_height().unwrap(), 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_corrupted_descriptor_list_panics_on_load() {
+        let datadir = TestDatadir::new();
+        // A descriptor list that can't be deserialized makes `get_descriptors` fail
+        let database = KvDatabase::with_corrupted_descriptor_list(datadir.path());
+
+        // A wallet whose descriptor list can't be read is unrecoverable, so loading
+        // it panics rather than silently resetting to the genesis block
+        let _cache = AddressCache::new(database, ConsensusMerkle);
+    }
+
+    #[test]
+    fn test_cache_mempool_transaction_untracked_coins() {
+        let (untracked, _) = get_untracked_address();
+        let cache = get_test_cache();
+
+        // A mempool transaction touching neither our addresses nor our utxos doesn't
+        // report any coin back
+        let unrelated = build_spend(
+            OutPoint {
+                txid: Txid::all_zeros(),
+                vout: 0,
+            },
+            1_000,
+            &untracked,
+        );
+
+        assert!(
+            cache
+                .cache_mempool_transaction(&unrelated)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_get_address_utxos_unknown_address() {
+        let cache = get_test_cache();
+        let unknown_hash = get_spk_hash(&ScriptBuf::new());
+
+        assert!(cache.get_address_utxos(&unknown_hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_get_address_history_unknown_address() {
+        let cache = get_test_cache();
+        let unknown_hash = get_spk_hash(&ScriptBuf::new());
+
+        assert!(cache.get_address_history(&unknown_hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_get_merkle_proof_unknown_transaction() {
+        let cache = get_test_cache();
+        let unknown_txid = Txid::from_byte_array([0x42; 32]);
+
+        assert!(cache.get_merkle_proof(&unknown_txid).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_get_address_utxos_skips_unresolvable_utxos() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        // The address claims an utxo whose transaction was never saved
+        let missing_tx = OutPoint {
+            txid: Txid::from_byte_array([0x11; 32]),
+            vout: 0,
+        };
+        cache
+            .inner
+            .write()
+            .unwrap()
+            .address_map
+            .get_mut(&script_hash)
+            .unwrap()
+            .utxos
+            .push(missing_tx);
+        assert!(cache.get_address_utxos(&script_hash).unwrap().is_none());
+
+        // An utxo pointing past the end of its transaction's outputs
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        cache
+            .cache_transaction(
+                &transaction,
+                118511,
+                transaction.output[0].value.to_sat(),
+                MerkleProof::default(),
+                1,
+                0,
+                false,
+                script_hash,
+            )
+            .unwrap();
+        {
+            let mut inner = cache.inner.write().unwrap();
+            let entry = inner.address_map.get_mut(&script_hash).unwrap();
+            entry.utxos.clear();
+            entry.utxos.push(OutPoint {
+                txid: transaction.compute_txid(),
+                vout: 5,
+            });
+        }
+
+        assert!(cache.get_address_utxos(&script_hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_save_non_mempool_tx_unknown_spent_utxo() {
+        let (address, script_hash) = get_test_address();
+        let cache = get_test_cache();
+        cache.cache_address(address.script_pubkey()).unwrap();
+
+        // A confirmed transaction paying the address, so it owns one utxo
+        let transaction: bitcoin::Transaction = deserialize_from_str(PAYING_TX);
+        cache
+            .cache_transaction(
+                &transaction,
+                118511,
+                transaction.output[0].value.to_sat(),
+                MerkleProof::default(),
+                1,
+                0,
+                false,
+                script_hash,
+            )
+            .unwrap();
+
+        // A spend of an utxo this address never owned: the balance is debited, but no
+        // utxo is removed
+        let spend = build_spend(
+            OutPoint {
+                txid: Txid::all_zeros(),
+                vout: 0,
+            },
+            1_000,
+            &address,
+        );
+        let cached = CachedTransaction {
+            tx: spend.clone(),
+            height: 118512,
+            merkle_block: None,
+            hash: spend.compute_txid(),
+            position: 1,
+        };
+
+        cache
+            .save_non_mempool_tx(&spend, true, 1_000, 0, script_hash, cached)
+            .unwrap();
+
+        assert_eq!(
+            cache.get_address_balance(&script_hash).unwrap(),
+            Some(999_890 - 1_000)
+        );
+        assert_eq!(
+            cache
+                .get_address_utxos(&script_hash)
+                .unwrap()
+                .unwrap()
+                .len(),
+            1
         );
     }
 }

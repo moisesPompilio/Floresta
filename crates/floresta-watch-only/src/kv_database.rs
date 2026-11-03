@@ -38,6 +38,24 @@ impl KvDatabase {
     }
 }
 
+#[cfg(test)]
+impl KvDatabase {
+    /// Create a [`KvDatabase`] inside the `datadir` whose descriptor list can't be
+    /// deserialized.
+    ///
+    /// The data is written through the database's own handle, because reopening the
+    /// same datadir right after closing it races with sled releasing its file lock.
+    pub(crate) fn with_corrupted_descriptor_list(datadir: impl AsRef<Path>) -> Self {
+        let database = Self::new(datadir).unwrap();
+        database
+            .1
+            .set(&String::from("desc"), &b"not a json".to_vec())
+            .unwrap();
+
+        database
+    }
+}
+
 /// Errors related to the [`KvDatabase`].
 #[derive(Debug)]
 pub enum KvDatabaseError {
