@@ -1516,6 +1516,20 @@ mod test {
     }
 
     #[test]
+    fn test_payment_at_gap_limit_boundary() {
+        // The horizon is at 100 and GAP_LIMIT is 20: an address derives more once it is
+        // within 20 of the horizon, so index 80 does and index 79 doesn't
+        let cache = get_test_cache();
+        cache.push_descriptor(DESC_A).unwrap();
+
+        pay(&cache, &script_at(DESC_A, 79));
+        assert_eq!(derivation_index(&cache), DERIVATION_COUNT);
+
+        pay(&cache, &script_at(DESC_A, 80));
+        assert_eq!(derivation_index(&cache), 2 * DERIVATION_COUNT);
+    }
+
+    #[test]
     fn test_payment_to_unknown_address_does_not_derive() {
         let cache = get_test_cache();
         cache.push_descriptor(DESC_A).unwrap();
@@ -1919,6 +1933,26 @@ mod test {
     }
 
     #[test]
+    fn test_derive_addresses_invalid_descriptor_error() {
+        let cache = get_test_cache();
+        // A descriptor that can't be parsed is stored directly into the database
+        cache
+            .inner
+            .read()
+            .unwrap()
+            .database
+            .save_descriptor("not a descriptor")
+            .unwrap();
+
+        let error = cache.derive_addresses().unwrap_err();
+
+        assert!(matches!(error, WatchOnlyError::InvalidDescriptor(_)));
+        // Nothing was cached, so the derivation index is left untouched
+        assert_eq!(cache.get_stats().unwrap().derivation_index, 0);
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+    }
+
+    #[test]
     fn test_maybe_derive_addresses() {
         let cache = get_test_cache();
 
@@ -1947,6 +1981,48 @@ mod test {
             cache.n_cached_addresses().unwrap(),
             2 * DERIVATION_COUNT as usize
         );
+    }
+
+    #[test]
+    fn test_maybe_derive_addresses_derivation_error() {
+        let cache = get_test_cache();
+
+        // An invalid descriptor straight into the database, and a derived address
+        // recorded within GAP_LIMIT of the horizon, so derivation is attempted
+        cache
+            .inner
+            .read()
+            .unwrap()
+            .database
+            .save_descriptor("not a descriptor")
+            .unwrap();
+        let stats = Stats {
+            derivation_index: DERIVATION_COUNT,
+            ..Default::default()
+        };
+        cache
+            .inner
+            .read()
+            .unwrap()
+            .database
+            .save_stats(&stats)
+            .unwrap();
+        let hash = derived_address_hash(TEST_TPUB_MAIN_DESCRIPTOR, DERIVATION_COUNT - 1);
+        cache
+            .inner
+            .write()
+            .unwrap()
+            .derived_index
+            .insert(hash, DERIVATION_COUNT - 1);
+
+        // Derivation fails, but the error is logged rather than propagated
+        cache.maybe_derive_addresses(&hash).unwrap();
+
+        assert_eq!(
+            cache.get_stats().unwrap().derivation_index,
+            DERIVATION_COUNT
+        );
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
     }
 
     #[test]
@@ -2259,12 +2335,17 @@ mod test {
 
     #[test]
     fn test_setup() {
-        let datadir = TestDatadir::new();
-        let cache = AddressCache::new_default(datadir.path(), ConsensusMerkle).unwrap();
+        let cache = failing_cache([]);
+        cache.bump_height(118511).unwrap();
 
+        // A wallet whose descriptors can be read keeps the height it scanned up to
         cache.setup().unwrap();
+        assert_eq!(cache.get_cache_height().unwrap(), 118511);
 
-        // A wallet that was just initialized scans from the genesis block
+        // One whose descriptors can't be read starts over from the genesis block
+        fail_database(&cache, [FailingOperation::GetDescriptors]);
+        cache.setup().unwrap();
+        fail_database(&cache, []);
         assert_eq!(cache.get_cache_height().unwrap(), 0);
     }
 
@@ -2426,6 +2507,31 @@ mod test {
         }
 
         assert!(cache.get_address_utxos(&script_hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_push_descriptor_invalid_descriptor_error() {
+        let cache = get_test_cache();
+
+        let error = cache.push_descriptor("not a descriptor").unwrap_err();
+
+        assert!(matches!(error, WatchOnlyError::InvalidDescriptor(_)));
+        // Nothing was cached nor persisted
+        assert!(cache.get_descriptors().unwrap().is_empty());
+        assert_eq!(cache.n_cached_addresses().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_new_default_invalid_datadir_error() {
+        // A datadir whose parent is a regular file can't hold a database
+        let datadir = TestDatadir::new();
+        std::fs::create_dir_all(datadir.path()).unwrap();
+        let parent = datadir.path().join("not-a-directory");
+        std::fs::write(&parent, "not a directory").unwrap();
+
+        let result = AddressCache::new_default(parent.join("data"), ConsensusMerkle);
+
+        assert!(matches!(result, Err(WatchOnlyError::DatabaseError(_))));
     }
 
     #[test]
@@ -2610,6 +2716,29 @@ mod test {
         // The horizon is only recorded once everything else succeeded
         fail_database(&cache, []);
         assert_eq!(derivation_index(&cache), 0);
+    }
+
+    #[test]
+    fn test_derive_addresses_derivation_error() {
+        // deriving at a hardened index fails, and the error bubbles up
+        let cache = get_test_cache();
+        cache.push_descriptor(TEST_TPUB_MAIN_DESCRIPTOR).unwrap();
+
+        let stats = Stats {
+            derivation_index: 1 << 31,
+            ..Default::default()
+        };
+        cache
+            .inner
+            .read()
+            .unwrap()
+            .database
+            .save_stats(&stats)
+            .unwrap();
+
+        let error = cache.derive_addresses().unwrap_err();
+
+        assert!(matches!(error, WatchOnlyError::InvalidDescriptor(_)));
     }
 
     #[test]
