@@ -32,12 +32,12 @@ use bitcoin::Block;
 use bitcoin::OutPoint;
 use bitcoin::Transaction;
 use bitcoin::TxOut;
-use bitcoin::consensus::deserialize;
+use bitcoin::absolute::LockTime;
 use bitcoin::consensus::encode::serialize_hex;
 use bitcoin::hash_types::Txid;
 use bitcoin::hashes::Hash as HashTrait;
-use bitcoin::hashes::hex::FromHex;
 use bitcoin::hashes::sha256::Hash;
+use bitcoin::transaction::Version;
 use floresta_common::prelude::*;
 use floresta_domain::wallet::error::WatchOnlyError;
 use merkle::MerkleProof;
@@ -99,7 +99,12 @@ impl Default for CachedTransaction {
         Self {
             // A placeholder transaction with no input and no outputs, the bare-minimum to be
             // serializable
-            tx: deserialize(&Vec::from_hex("010000000000ffffffff").unwrap()).unwrap(),
+            tx: Transaction {
+                version: Version::ONE,
+                lock_time: LockTime::ZERO,
+                input: Vec::new(),
+                output: Vec::new(),
+            },
             height: 0,
             merkle_block: None,
             hash: Txid::all_zeros(),
@@ -1577,11 +1582,16 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "called `Result::unwrap()` on an `Err` value")]
     fn test_cached_transaction_default() {
-        // The placeholder transaction can't be deserialized: its empty input list is read
-        // as the segwit marker, so building the default value panics
-        let _ = CachedTransaction::default();
+        let cached = CachedTransaction::default();
+
+        assert_eq!(cached.height, 0);
+        assert_eq!(cached.position, 0);
+        assert_eq!(cached.hash, Txid::all_zeros());
+        assert!(cached.merkle_block.is_none());
+        // the placeholder transaction is the bare minimum to be serializable
+        assert!(cached.tx.input.is_empty());
+        assert!(cached.tx.output.is_empty());
     }
 
     #[test]
