@@ -320,6 +320,13 @@ mod test {
         ]
     }
 
+    /// A taproot descriptor whose multipath keys have tuples of different lengths. Parsing
+    /// accepts it, as the internal key and the leaves are checked apart, but splitting it fails
+    fn get_multipath_len_mismatch_descriptor() -> String {
+        let xpub = TEST_CASE_XPUB.xpub;
+        format!("tr({}/<0;1>/*,pk({xpub}/<0;1;2>/*))", TEST_CASE_TPUB.xpub)
+    }
+
     #[test]
     fn test_parse_xpub_valid_cases() {
         let cases = TEST_CASES;
@@ -537,6 +544,39 @@ mod test {
         let result =
             derive_addresses_from_list_descriptors(&[invalid_descriptor.to_string()], 0, 1);
         check(result);
+    }
+
+    #[test]
+    fn test_parse_and_split_descriptor_multipath_len_mismatch_error() {
+        let descriptor = get_multipath_len_mismatch_descriptor();
+        assert!(Descriptor::<DescriptorPublicKey>::from_str(&descriptor).is_ok());
+
+        // the descriptor is valid, but it can't be split into single descriptors
+        let error = parse_and_split_descriptor(&descriptor).unwrap_err();
+
+        assert!(matches!(
+            error,
+            DescriptorError::MiniscriptError(miniscript::Error::MultipathDescLenMismatch)
+        ));
+
+        // the same goes while deriving
+        let error = derive_addresses_from_descriptor(&descriptor, 0, 1).unwrap_err();
+        assert!(matches!(
+            error,
+            DescriptorError::MiniscriptError(miniscript::Error::MultipathDescLenMismatch)
+        ));
+    }
+
+    #[test]
+    fn test_parse_and_split_descriptor_repeated_key_error() {
+        // miniscript parses it, but a key can't be repeated in a multisig
+        let key = format!("[54ff5a12/48h/1h/0h/2h]{}/<0;1>/*", TEST_CASE_TPUB.xpub);
+        let descriptor = format!("wsh(sortedmulti(2,{key},{key}))");
+        assert!(Descriptor::<DescriptorPublicKey>::from_str(&descriptor).is_ok());
+
+        let error = parse_and_split_descriptor(&descriptor).unwrap_err();
+
+        assert!(matches!(error, DescriptorError::MiniscriptError(_)));
     }
 
     #[test]
