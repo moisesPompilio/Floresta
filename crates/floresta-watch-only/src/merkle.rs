@@ -155,10 +155,15 @@ mod test {
     use core::str::FromStr;
 
     use bitcoin::Txid;
+    use bitcoin::consensus::Encodable;
     use bitcoin::consensus::deserialize;
+    use bitcoin::consensus::serialize;
     use bitcoin::hashes::Hash;
     use bitcoin::hashes::hex::FromHex;
     use bitcoin::hashes::sha256d;
+    use bitcoin::io::Error;
+    use bitcoin::io::ErrorKind;
+    use bitcoin::io::Write;
     use floresta_chain::pruned_utreexo::merkle::ConsensusMerkle;
     use floresta_common::prelude::*;
 
@@ -222,7 +227,6 @@ mod test {
 
     #[test]
     fn test_serialization() {
-        use bitcoin::consensus::serialize;
         let hashes = Vec::from([
             "9fe0683d05e5a8ce867712f0f744a1e9893365307d433ab3b8f65dfc59d561de",
             "9e2804f04a9d52ad4b67e10cba631934915a7d6d083126b338dda680522bb602",
@@ -260,5 +264,59 @@ mod test {
                 .verify(*block.header.merkle_root.as_raw_hash())
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn test_deserialization_rejects_truncated_proofs() {
+        // Cutting the serialized bytes at every length must be reported as an error,
+        // covering each field's decode: pos, target, the hashes length and the hashes
+        let proof = MerkleProof {
+            target: Txid::from_byte_array([0x42; 32]),
+            pos: 0x42,
+            hashes: vec![sha256d::Hash::from_byte_array([0x11; 32])],
+        };
+        let serialized = serialize(&proof);
+
+        for cut in 0..serialized.len() {
+            assert!(deserialize::<MerkleProof>(&serialized[..cut]).is_err());
+        }
+    }
+
+    #[test]
+    fn test_serialization_reports_writer_errors() {
+        /// A writer that fails after a set number of successful writes
+        struct FlakyWriter {
+            writes_left: usize,
+        }
+
+        impl Write for FlakyWriter {
+            fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
+                if self.writes_left == 0 {
+                    return Err(Error::new(ErrorKind::Other, "the disk is on fire"));
+                }
+                self.writes_left -= 1;
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> Result<(), Error> {
+                Ok(())
+            }
+        }
+
+        let proof = MerkleProof {
+            target: Txid::from_byte_array([0x42; 32]),
+            pos: 0x42,
+            hashes: vec![
+                sha256d::Hash::from_byte_array([0x11; 32]),
+                sha256d::Hash::from_byte_array([0x22; 32]),
+            ],
+        };
+
+        // Failing at each field's write covers every error path: pos, target,
+        // the hashes length and the hashes themselves
+        for writes_left in 0..4 {
+            let mut writer = FlakyWriter { writes_left };
+            assert!(proof.consensus_encode(&mut writer).is_err());
+        }
     }
 }
