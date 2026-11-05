@@ -942,6 +942,9 @@ mod test {
     use core::str::FromStr;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::thread;
+    use std::time::Duration;
+    use std::time::Instant;
 
     use bitcoin::Address;
     use bitcoin::Amount;
@@ -974,6 +977,7 @@ mod test {
     use crate::DERIVATION_COUNT;
     use crate::descriptor::derive_addresses_from_descriptor;
     use crate::kv_database::KvDatabase;
+    use crate::kv_database::KvDatabaseError;
     use crate::merkle::MerkleProof;
 
     const BLOCK_FIRST_UTXO: &str = "00000020b4f594a390823c53557c5a449fa12413cbbae02be529c11c4eb320ff8e000000dd1211eb35ca09dc0ee519b0f79319fae6ed32c66f8bbf353c38513e2132c435474d81633c4b011e195a220002010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0403edce01feffffff028df2052a0100000016001481113cad52683679a83e76f76f84a4cfe36f75010000000000000000776a24aa21a9ed67863b4f356b7b9f3aab7a2037615989ef844a0917fb0a1dcd6c23a383ee346b4c4fecc7daa2490047304402203768ff10a948a2dd1825cc5a3b0d336d819ea68b5711add1390b290bf3b1cba202201d15e73791b2df4c0904fc3f7c7b2f22ab77762958e9bc76c625138ad3a04d290100012000000000000000000000000000000000000000000000000000000000000000000000000002000000000101be07b18750559a418d144f1530be380aa5f28a68a0269d6b2d0e6ff3ff25f3200000000000feffffff0240420f00000000001600142b6a2924aa9b1b115d1ac3098b0ba0e6ed510f2a326f55d94c060000160014c2ed86a626ee74d854a12c9bb6a9b72a80c0ddc50247304402204c47f6783800831bd2c75f44d8430bf4d962175349dc04d690a617de6c1eaed502200ffe70188a6e5ad89871b2acb4d0f732c2256c7ed641d2934c6e84069c792abc012103ba174d9c66078cf813d0ac54f5b19b5fe75104596bdd6c1731d9436ad8776f41ecce0100";
@@ -1400,22 +1404,39 @@ mod test {
         );
     }
 
+    /// Reopens the [`KvDatabase`] in `datadir`, waiting for a database that was just
+    /// dropped there to release its file lock.
+    ///
+    /// sled releases the lock from background threads some time after the database is
+    /// dropped, so reopening the same datadir right away can fail under load. That
+    /// surfaces as a [`KvDatabaseError::KvError`], which is retried for a few seconds;
+    /// any other error panics immediately.
+    fn reopen_kv_database(datadir: &Path) -> KvDatabase {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match KvDatabase::new(datadir) {
+                Ok(database) => return database,
+                Err(KvDatabaseError::KvError(_)) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("could not reopen the database in {datadir:?}: {error}"),
+            }
+        }
+    }
+
     #[test]
     fn test_derivation_survives_reload() {
-        let datadir = std::env::temp_dir().join(format!("{}.floresta", rand::random::<u32>()));
-        let cache = AddressCache::new(KvDatabase::new(&datadir).unwrap(), ConsensusMerkle);
+        let datadir = TestDatadir::new();
+        let cache = AddressCache::new(KvDatabase::new(datadir.path()).unwrap(), ConsensusMerkle);
         cache.push_descriptor(DESC_A).unwrap();
         pay(&cache, &script_at(DESC_A, 85));
         assert_eq!(derivation_index(&cache), 2 * DERIVATION_COUNT);
         drop(cache);
 
-        let cache = AddressCache::new(KvDatabase::new(&datadir).unwrap(), ConsensusMerkle);
+        let cache = AddressCache::new(reopen_kv_database(datadir.path()), ConsensusMerkle);
         pay(&cache, &script_at(DESC_A, 190));
-        let index = derivation_index(&cache);
-        drop(cache);
-        std::fs::remove_dir_all(&datadir).unwrap();
 
-        assert_eq!(index, 3 * DERIVATION_COUNT);
+        assert_eq!(derivation_index(&cache), 3 * DERIVATION_COUNT);
     }
 
     const XPUB_A: &str = "[54ff5a12/48h/1h/0h/2h]tpubDDw6pwZA3hYxcSN32q7a5ynsKmWr4BbkBNHydHPKkM4BZwUfiK7tQ26h7USm8kA1E2FvCy7f7Er7QXKF8RNptATywydARtzgrxuPDwyYv4x";
