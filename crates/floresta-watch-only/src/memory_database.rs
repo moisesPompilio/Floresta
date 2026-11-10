@@ -34,6 +34,8 @@ struct Inner {
 pub enum MemoryDatabaseError {
     /// The lock is poisoned.
     PoisonedLock,
+    /// The [`CachedTransaction`] was not found.
+    TransactionNotFound,
 }
 
 #[derive(Debug, Default)]
@@ -48,6 +50,9 @@ impl Display for MemoryDatabaseError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::PoisonedLock => write!(f, "Poisoned lock"),
+            Self::TransactionNotFound => {
+                write!(f, "The requested transaction was not found in the database")
+            }
         }
     }
 }
@@ -140,7 +145,7 @@ impl AddressCacheDatabase for MemoryDatabase {
         if let Some(tx) = self.get_inner()?.transactions.get(txid) {
             return Ok(tx.clone());
         }
-        Err(MemoryDatabaseError::PoisonedLock)
+        Err(MemoryDatabaseError::TransactionNotFound)
     }
 
     /// Save a [`CachedTransaction`] to the [`MemoryDatabase`].
