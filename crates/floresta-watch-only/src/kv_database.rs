@@ -202,7 +202,7 @@ impl AddressCacheDatabase for KvDatabase {
         for item in tx_store.iter() {
             let item = item?;
             let key = item.key::<&[u8]>()?;
-            transactions.push(Txid::from_slice(key).unwrap());
+            transactions.push(deserialize(key)?);
         }
         Ok(transactions)
     }
@@ -313,6 +313,20 @@ mod test {
         assert!(matches!(
             db.load().unwrap_err(),
             KvDatabaseError::KvError(_)
+        ));
+    }
+
+    #[test]
+    fn test_list_transactions_invalid_key_error() {
+        // a key that isn't a 32-byte txid is reported instead of panicking
+        let (_dir, db) = get_test_db();
+        let tx_store = db.0.bucket::<&[u8], Vec<u8>>(Some("transactions")).unwrap();
+        let key: &[u8] = &[0x01, 0x02, 0x03];
+        tx_store.set(&key, &b"not a json".to_vec()).unwrap();
+
+        assert!(matches!(
+            db.list_transactions().unwrap_err(),
+            KvDatabaseError::DeserializeError(_)
         ));
     }
 
