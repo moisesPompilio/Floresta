@@ -693,10 +693,8 @@ where
         }
         let tx = inner.get_transaction(&outpoint.txid);
 
-        match tx {
-            None => Ok(None),
-            Some(tx) => Ok(Some(tx.tx.output[outpoint.vout as usize].clone())),
-        }
+        // Fall through to `None` if the index points past the transaction's outputs
+        Ok(tx.and_then(|tx| tx.tx.output.get(outpoint.vout as usize).cloned()))
     }
 
     pub fn n_cached_addresses(&self) -> Result<usize, WatchOnlyError> {
@@ -1688,6 +1686,33 @@ mod test {
             cache.get_utxo(&utxo).unwrap().unwrap().value.to_sat(),
             999_890
         );
+    }
+
+    #[test]
+    fn test_get_utxo_past_the_transaction_outputs() {
+        let (cache, script_hash, transaction) = get_test_cache_with_paying_tx();
+
+        // The transaction and its first output are known
+        let utxo = OutPoint {
+            txid: transaction.compute_txid(),
+            vout: 0,
+        };
+        assert!(cache.get_utxo(&utxo).unwrap().is_some());
+
+        // The index claims an outpoint past the end of the transaction's outputs, which
+        // is reported as spent rather than panicking
+        let past_the_end = OutPoint {
+            txid: transaction.compute_txid(),
+            vout: transaction.output.len() as u32,
+        };
+        cache
+            .inner
+            .write()
+            .unwrap()
+            .utxo_index
+            .insert(past_the_end, script_hash);
+
+        assert!(cache.get_utxo(&past_the_end).unwrap().is_none());
     }
 
     #[test]
