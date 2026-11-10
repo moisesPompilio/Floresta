@@ -162,8 +162,10 @@ enum Slip132Prefix {
 /// Extracts the 4-byte prefix from the SLIP132-encoded string and validates it.
 fn extract_slip132_prefix(s: &str) -> Result<Slip132Prefix, Error> {
     let data = base58::decode_check(s)?;
-    let mut prefix = [0u8; 4];
-    prefix.copy_from_slice(&data[0..4]);
+    let prefix: [u8; 4] = data
+        .first_chunk::<4>()
+        .copied()
+        .ok_or(bip32::Error::WrongExtendedKeyLength(data.len()))?;
 
     validate_slip132_prefix(prefix)
 }
@@ -334,6 +336,20 @@ mod test {
 
             let error = is_xpub_mainnet(&key).unwrap_err();
             assert_eq!(error, Error::UnknownSlip32Prefix);
+        }
+    }
+
+    #[test]
+    fn test_extract_slip132_prefix_short_payload_error() {
+        // valid base58check, but too short to hold a 4-byte version prefix
+        for payload in [&[][..], &[1u8, 2][..]] {
+            let short = base58::encode_check(payload);
+            let error = extract_slip132_prefix(&short).unwrap_err();
+
+            assert_eq!(
+                error,
+                Error::Bip32(bip32::Error::WrongExtendedKeyLength(payload.len()))
+            );
         }
     }
 
