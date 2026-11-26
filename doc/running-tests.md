@@ -60,12 +60,28 @@ For the full test suite, including long-running tests, use:
 cargo test --release
 ```
 
+## The feature matrix
+
+Each crate is tested under every feature combination (via [feature_matrix.sh](../contrib/feature_matrix.sh), the same matrix CI runs):
+
+```bash
+just test-features
+just lint-features
+```
+
+`just test-features` runs the tests for every combination, while
+`just lint-features` runs formatting, documentation, spelling, and clippy
+checks for every combination.
+
+The coverage helper below reuses the matrix differently: instead of
+enumerating every subset, it takes the three corners (all, default, and
+no-default features) and reports the union, so code compiled under only one
+feature set is still measured.
+
 ## Coverage testing
 
-[coverage-matrix.sh](../contrib/coverage-matrix.sh) reports line coverage over
-the feature matrix (all, default, and no-default features), reporting the union
-of the three configurations, so code compiled under only one feature set is
-still measured.
+[coverage-matrix.sh](../contrib/coverage-matrix.sh) reports line coverage for
+the union of the three feature configurations:
 
 Prerequisite:
 
