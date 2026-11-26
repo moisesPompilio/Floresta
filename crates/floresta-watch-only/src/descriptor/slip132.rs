@@ -354,6 +354,30 @@ mod test {
     }
 
     #[test]
+    fn test_slip132_error_display() {
+        let corrupted: String = format!("y{}", &XPUB[1..]);
+        let base58_error = extract_slip132_prefix(&corrupted).unwrap_err();
+        let bip32_error = extract_slip132_prefix(&base58::encode_check(&[1u8, 2])).unwrap_err();
+
+        let messages = [
+            base58_error.to_string(),
+            bip32_error.to_string(),
+            Error::UnknownSlip32Prefix.to_string(),
+            Error::XprivUnsupported.to_string(),
+            Error::XpubMultisigUnsupported.to_string(),
+        ];
+
+        assert!(messages[0].starts_with("Base58 error:"));
+        assert!(messages[1].starts_with("BIP32 error:"));
+        assert_eq!(messages[2], "Unknown SLIP-132 prefix");
+        assert_eq!(messages[3], "Extended private keys are unsupported");
+        assert_eq!(
+            messages[4],
+            "Extended public keys for multisig are unsupported. Use descriptors instead"
+        );
+    }
+
+    #[test]
     fn test_helpers_with_invalid_private_and_multisig_keys() {
         assert_eq!(is_xpub_mainnet(XPRIV).unwrap_err(), Error::XprivUnsupported);
         assert_eq!(
