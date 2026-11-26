@@ -60,6 +60,37 @@ For the full test suite, including long-running tests, use:
 cargo test --release
 ```
 
+## Coverage testing
+
+[coverage-matrix.sh](../contrib/coverage-matrix.sh) reports line coverage over
+the feature matrix (all, default, and no-default features), reporting the union
+of the three configurations, so code compiled under only one feature set is
+still measured.
+
+Prerequisite:
+
+```bash
+cargo install cargo-llvm-cov
+rustup component add llvm-tools-preview
+```
+
+```bash
+# whole crate, requiring at least 95% of lines covered
+./contrib/coverage-matrix.sh -p floresta-watch-only --fail-under 95
+
+# only lines added by a change (new code must be fully covered by default)
+./contrib/coverage-matrix.sh --diff origin/master -p floresta-watch-only
+
+# only specific files (repeat --file for more)
+./contrib/coverage-matrix.sh -p floresta-watch-only --file crates/floresta-watch-only/src/merkle.rs
+```
+
+Results go to `coverage.out/` (`summary.txt`, `lcov.info`, and `missed.txt`
+listing uncovered lines). The script exits `0` on success, `1` when coverage
+is below the minimum, and `2` on usage or run failures. Note that `#[cfg(test)]`
+lines count toward the totals, and uncovered IO error paths can keep 100%
+regions out of reach. Run `./contrib/coverage-matrix.sh --help` for details.
+
 Next sections will cover the Python functional tests.
 
 ### Setting Functional Tests Binaries
