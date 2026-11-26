@@ -1162,6 +1162,10 @@ mod test {
         let desc = "wsh(sortedmulti(1,[54ff5a12/48h/1h/0h/2h]tpubDDw6pwZA3hYxcSN32q7a5ynsKmWr4BbkBNHydHPKkM4BZwUfiK7tQ26h7USm8kA1E2FvCy7f7Er7QXKF8RNptATywydARtzgrxuPDwyYv4x/<0;1>/*,[bcf969c0/48h/1h/0h/2h]tpubDEFdgZdCPgQBTNtGj4h6AehK79Jm4LH54JrYBJjAtHMLEAth7LuY87awx9ZMiCURFzFWhxToRJK6xp39aqeJWrG5nuW3eBnXeMJcvDeDxfp/<0;1>/*))#fuw35j0q";
         cache.push_descriptor(desc).unwrap();
         assert!(cache.is_cached(desc).unwrap());
+        assert_eq!(
+            cache.n_cached_addresses(),
+            Ok(1 + 2 * DERIVATION_COUNT as usize)
+        );
 
         // [derive_addresses]
         cache.derive_addresses().unwrap();
