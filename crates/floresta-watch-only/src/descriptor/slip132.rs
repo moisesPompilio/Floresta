@@ -88,11 +88,11 @@ const VERSION_MAGIC_UPUB_MULTISIG: [u8; 4] = [0x02, 0x42, 0x89, 0xef];
 /// multi-signature P2WSH in P2SH
 const VERSION_MAGIC_UPRV_MULTISIG: [u8; 4] = [0x02, 0x42, 0x85, 0xb5];
 
-/// Magical version bytes for Zpub: bitcoin testnet/regtest public key for
+/// Magical version bytes for Vpub: bitcoin testnet/regtest public key for
 /// multi-signature P2WSH
 const VERSION_MAGIC_VPUB_MULTISIG: [u8; 4] = [0x02, 0x57, 0x54, 0x83];
 
-/// Magical version bytes for Zprv: bitcoin testnet/regtest private key for
+/// Magical version bytes for Vprv: bitcoin testnet/regtest private key for
 /// multi-signature P2WSH
 const VERSION_MAGIC_VPRV_MULTISIG: [u8; 4] = [0x02, 0x57, 0x50, 0x48];
 
